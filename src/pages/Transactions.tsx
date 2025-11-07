@@ -1,18 +1,16 @@
 import { TransactionsTable } from "@/components/TransactionsTable";
-import { Sidebar } from "@/components/Sidebar";
-import { Header } from "@/components/Header";
+import { AppLayout } from "@/components/AppLayout";
 
 const Transactions = () => {
   return (
-    <div className="min-h-screen bg-background">
-      <Sidebar />
-      <div className="lg:ml-64">
-        <Header />
-        <main className="p-6">
-          <TransactionsTable />
-        </main>
+    <AppLayout 
+      title="Exact Accounts Transactions" 
+      subtitle="Complete ledger view with detailed transaction history"
+    >
+      <div className="p-4 md:p-6 lg:p-8">
+        <TransactionsTable />
       </div>
-    </div>
+    </AppLayout>
   );
 };
 

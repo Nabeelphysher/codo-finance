@@ -28,17 +28,17 @@ const transactions: Transaction[] = [
 export const TransactionsList = () => {
   return (
     <div className="bg-card rounded-2xl p-6 shadow-card">
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
         <h3 className="text-lg font-semibold text-foreground">Recent expenses</h3>
-        <div className="flex gap-2">
-          <span className="text-sm text-muted-foreground">Date</span>
-          <span className="text-sm text-muted-foreground">Amount</span>
+        <div className="flex gap-2 text-sm text-muted-foreground">
+          <span>Date</span>
+          <span className="hidden sm:inline">Amount</span>
         </div>
       </div>
 
       <div className="space-y-4">
         {transactions.map((transaction) => (
-          <div key={transaction.id} className="flex items-center justify-between">
+          <div key={transaction.id} className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-accent flex items-center justify-center text-accent-foreground">
                 {transaction.icon}
@@ -53,7 +53,7 @@ export const TransactionsList = () => {
         ))}
       </div>
 
-      <div className="mt-6 flex items-center justify-between">
+      <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
         <button className="text-primary text-sm font-medium hover:underline">
           See all history
         </button>

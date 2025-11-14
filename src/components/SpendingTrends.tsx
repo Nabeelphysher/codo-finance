@@ -35,11 +35,11 @@ const trends: Trend[] = [
 export const SpendingTrends = () => {
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="text-lg font-semibold text-foreground">Your spending trends</h3>
       </div>
 
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
         {trends.map((trend) => (
           <div key={trend.id} className="bg-card rounded-2xl p-6 shadow-card hover:shadow-soft transition-shadow">
             <div className="flex items-start justify-between mb-4">
@@ -55,7 +55,7 @@ export const SpendingTrends = () => {
         ))}
       </div>
 
-      <div className="flex items-center justify-between mt-6">
+      <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
         <button className="text-primary text-sm font-medium hover:underline">
           See all details
         </button>

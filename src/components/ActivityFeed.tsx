@@ -39,7 +39,7 @@ const activities: Activity[] = [
 export const ActivityFeed = () => {
   return (
     <div className="bg-card rounded-2xl p-6 shadow-card">
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
         <h3 className="text-lg font-semibold text-foreground">Activity</h3>
         <button className="text-primary text-sm font-medium hover:underline">
           See all
@@ -48,7 +48,7 @@ export const ActivityFeed = () => {
 
       <div className="space-y-4">
         {activities.map((activity) => (
-          <div key={activity.id} className="flex items-center justify-between">
+          <div key={activity.id} className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex items-center gap-3">
               <div className={`w-10 h-10 rounded-xl ${activity.iconBg} flex items-center justify-center text-white`}>
                 {activity.icon}

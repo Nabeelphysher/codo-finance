@@ -23,6 +23,10 @@ const Index = () => {
             </div>
 
             <SpendingTrends />
+
+            <div className="xl:hidden">
+              <ActivityFeed />
+            </div>
           </div>
         </div>
 

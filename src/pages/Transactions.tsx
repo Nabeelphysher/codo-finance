@@ -3,11 +3,8 @@ import { AppLayout } from "@/components/AppLayout";
 
 const Transactions = () => {
   return (
-    <AppLayout 
-      title="Exact Accounts Transactions" 
-      subtitle="Complete ledger view with detailed transaction history"
-    >
-      <div className="p-4 md:p-6 lg:p-8">
+    <AppLayout fullWidth>
+      <div className="px-4 pb-6 pt-2 md:px-6 md:pb-8 md:pt-4 lg:px-8">
         <TransactionsTable />
       </div>
     </AppLayout>

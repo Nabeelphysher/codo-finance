@@ -1,13 +1,12 @@
 import { Button } from "@/components/ui/button";
-import { Sparkles } from "lucide-react";
 
 export const PromoCard = () => {
   return (
     <div className="bg-gradient-primary rounded-2xl p-6 shadow-card relative overflow-hidden">
       <div className="relative z-10">
-        <div className="flex items-start justify-between">
+        <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
           <div className="flex-1">
-            <h3 className="text-2xl font-bold text-primary-foreground mb-2">
+            <h3 className="text-2xl font-bold text-primary-foreground mb-2 sm:text-3xl">
               Upgrade to Premium! 50% off now!
             </h3>
             <p className="text-primary-foreground/90 text-sm mb-4 max-w-md">
@@ -15,12 +14,12 @@ export const PromoCard = () => {
             </p>
             <Button 
               variant="secondary" 
-              className="bg-white text-primary hover:bg-white/90 rounded-full px-6"
+              className="bg-white text-primary hover:bg-white/90 rounded-full px-6 w-full sm:w-auto"
             >
               Let's go!
             </Button>
           </div>
-          <div className="text-6xl">🏆</div>
+          <div className="text-5xl sm:text-6xl self-center sm:self-auto">🏆</div>
         </div>
       </div>
       

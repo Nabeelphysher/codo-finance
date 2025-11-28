@@ -36,6 +36,10 @@ export async function fetchTransaction(transactionId: number): Promise<Transacti
   return mockDb.getTransaction(transactionId);
 }
 
+export async function restoreTransaction(transactionId: number): Promise<Transaction> {
+  return mockDb.restoreTransaction(transactionId);
+}
+
 const serializeTransactionFilters = (filters: TransactionFilters = {}) => {
   const params = new URLSearchParams();
   Object.entries(filters).forEach(([key, value]) => {

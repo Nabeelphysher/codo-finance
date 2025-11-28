@@ -8,6 +8,7 @@ import {
   User,
   PanelLeftClose,
   PanelLeftOpen,
+  FileText,
 } from "lucide-react";
 import { useEffect } from "react";
 import { useLocation } from "react-router-dom";
@@ -36,6 +37,7 @@ const mainItems = [
   { title: "Operations", url: "/admin", icon: ShieldCheck },
   { title: "Analytics", url: "/analytics", icon: BarChart3 },
   { title: "Reports", url: "/reports", icon: TrendingUp },
+  { title: "Audit Log", url: "/audit-log", icon: FileText },
   { title: "Settings", url: "/settings", icon: Settings },
 ];
 
@@ -71,16 +73,18 @@ export function AppSidebar() {
   return (
     <Sidebar
       collapsible="icon"
-      className="flex flex-col border-r border-border/40 bg-gradient-to-b from-slate-50 via-white to-slate-100"
+      className="flex flex-col border-r border-[hsl(var(--sidebar-border))] bg-[hsl(var(--sidebar-background))] text-[hsl(var(--sidebar-foreground))]"
     >
-      <SidebarHeader className="border-b border-border/40">
+      <SidebarHeader className="border-b border-[hsl(var(--sidebar-border))]">
         <div className="flex items-center justify-between gap-2 px-3 py-4">
           <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-primary/20 bg-white text-primary shadow-[0_8px_20px_-12px_rgba(37,99,235,0.35)]">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-primary/20 bg-white text-primary shadow-[0_8px_20px_-12px_rgba(37,99,235,0.35)] dark:bg-[hsl(var(--sidebar-background))]">
               <CodoLogo className="h-6 w-6 shrink-0" />
             </div>
             {isExpanded && (
-              <span className="text-sm font-semibold uppercase tracking-[0.4em] text-slate-700">CODO</span>
+              <span className="text-sm font-semibold uppercase tracking-[0.4em] text-[hsl(var(--sidebar-foreground))]">
+                CODO
+              </span>
             )}
           </div>
           <div className="flex items-center gap-1.5">
@@ -88,7 +92,7 @@ export function AppSidebar() {
             <Button
               variant="ghost"
               size="icon"
-              className="hidden rounded-xl border border-border/40 text-muted-foreground transition hover:text-foreground lg:inline-flex"
+              className="hidden rounded-xl border border-[hsl(var(--sidebar-border))] text-[hsl(var(--sidebar-foreground))] transition hover:text-[hsl(var(--sidebar-primary))] lg:inline-flex"
               onClick={() => setOpen(!open)}
             >
               {open ? <PanelLeftClose className="h-4 w-4" /> : <PanelLeftOpen className="h-4 w-4" />}
@@ -100,7 +104,7 @@ export function AppSidebar() {
 
       <SidebarContent className="space-y-6 px-2 py-5">
         <SidebarGroup className="space-y-3">
-          <SidebarGroupLabel className="px-3 text-[11px] font-medium uppercase tracking-[0.3em] text-muted-foreground">
+          <SidebarGroupLabel className="px-3 text-[11px] font-medium uppercase tracking-[0.3em] text-[hsl(var(--sidebar-foreground)/0.7)]">
             Navigation
           </SidebarGroupLabel>
           <SidebarGroupContent>
@@ -112,16 +116,16 @@ export function AppSidebar() {
                     isActive={isActive(item.url)}
                     className={cn(
                       "group relative mx-1 my-0.5 rounded-2xl px-3 py-2 text-sm font-medium transition-all duration-200",
-                      "hover:bg-slate-900/5 hover:text-slate-900 data-[state=active]:bg-slate-900 data-[state=active]:text-white",
+                      "hover:bg-[hsl(var(--sidebar-accent))] hover:text-[hsl(var(--sidebar-accent-foreground))] data-[state=active]:bg-[hsl(var(--sidebar-primary))] data-[state=active]:text-[hsl(var(--sidebar-primary-foreground))]",
                     )}
                   >
-                    <NavLink to={item.url} end={item.url === "/"} className="flex w-full items-center gap-3">
+                    <NavLink to={item.url} end={item.url === "/"} className="flex w/full items-center gap-3">
                       <div
                         className={cn(
                           "flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-transparent transition-colors",
                           isActive(item.url)
-                            ? "bg-white/15 text-white"
-                            : "bg-white text-slate-400 group-hover:text-slate-700",
+                            ? "bg-white/15 text-[hsl(var(--sidebar-primary-foreground))]"
+                            : "bg-[hsl(var(--sidebar-background))] text-[hsl(var(--sidebar-foreground)/0.7)] group-hover:text-[hsl(var(--sidebar-primary))]",
                         )}
                       >
                         <item.icon className="h-4 w-4" strokeWidth={1.8} />
@@ -129,9 +133,9 @@ export function AppSidebar() {
                       {isExpanded && (
                         <div className="flex flex-1 items-center justify-between">
                           <span className="font-medium tracking-tight">{item.title}</span>
-                          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.28em] text-slate-400">
+                          <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.28em] text-[hsl(var(--sidebar-foreground)/0.6)]">
                             {item.badge && (
-                              <span className="flex h-6 w-6 items-center justify-center rounded-full bg-slate-900 text-white">
+                              <span className="flex h-6 w-6 items-center justify-center rounded-full bg-[hsl(var(--sidebar-primary))] text-[hsl(var(--sidebar-primary-foreground))]">
                                 {item.badge}
                               </span>
                             )}
@@ -148,7 +152,7 @@ export function AppSidebar() {
         </SidebarGroup>
       </SidebarContent>
 
-      <SidebarFooter className="mt-auto border-t border-border/40">
+      <SidebarFooter className="mt-auto border-t border-[hsl(var(--sidebar-border))]">
         <div className="w-full px-3 pb-4">
           <SidebarMenu>
             <SidebarMenuItem>
@@ -157,7 +161,7 @@ export function AppSidebar() {
                 isActive={isActive("/profile")}
                 className={cn(
                   "group relative mx-1 rounded-2xl px-3 py-2 text-sm font-medium transition-colors duration-200",
-                  "hover:bg-slate-900/5 hover:text-slate-900 data-[state=active]:bg-slate-900 data-[state=active]:text-white",
+                  "hover:bg-[hsl(var(--sidebar-accent))] hover:text-[hsl(var(--sidebar-accent-foreground))] data-[state=active]:bg-[hsl(var(--sidebar-primary))] data-[state=active]:text-[hsl(var(--sidebar-primary-foreground))]",
                 )}
               >
                 <NavLink to="/profile" className="flex items-center gap-3">
@@ -165,8 +169,8 @@ export function AppSidebar() {
                     className={cn(
                       "flex h-9 w-9 items-center justify-center rounded-xl border border-transparent transition-colors",
                       isActive("/profile")
-                        ? "bg-white/15 text-white"
-                        : "bg-white text-slate-400 group-hover:text-slate-700",
+                        ? "bg-white/15 text-[hsl(var(--sidebar-primary-foreground))]"
+                        : "bg-[hsl(var(--sidebar-background))] text-[hsl(var(--sidebar-foreground)/0.7)] group-hover:text-[hsl(var(--sidebar-primary))]",
                     )}
                   >
                     <User className="h-4 w-4" strokeWidth={1.8} />

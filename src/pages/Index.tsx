@@ -7,9 +7,10 @@ import { SpendingTrends } from "@/components/SpendingTrends";
 
 const Index = () => {
   return (
-    <AppLayout 
-      title="Good morning, Arnold" 
+    <AppLayout
+      title="Good morning, Arnold"
       subtitle="Let's take care of your finances."
+      disableContentPadding
     >
       <div className="flex flex-col lg:flex-row">
         {/* Main Content */}

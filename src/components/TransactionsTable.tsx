@@ -1,17 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
 import { format, isValid, parseISO } from "date-fns";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Transaction, FinanceType, Department, Bill } from "@/types/api";
+import { Transaction, FinanceType, Department, Bill, TransactionNature, Account } from "@/types/api";
 import {
   fetchTransactions,
   createTransaction,
   updateTransaction,
   deleteTransaction,
+  restoreTransaction,
   exportTransactionsFile,
   type TransactionFilters,
   type TransactionPayload,
   type TransactionExportResult,
 } from "@/services/transactions";
+import { fetchAccounts } from "@/services/accounts";
 import {
   uploadBillFile,
   linkBillToTransaction,
@@ -21,10 +23,12 @@ import {
 import { fetchFinanceTypes } from "@/services/financeTypes";
 import { fetchDepartments } from "@/services/departments";
 import { TransactionDetailModal, ManageBillHandler } from "@/components/TransactionDetailModal";
+import { TimePickerField } from "@/components/TimePickerField";
 import { Calendar, type CalendarRange } from "@/components/ui/calendar";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import type { PaginatedResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { combineDateAndTime, displayTimeTo24Hour, format24HourToDisplay, getCurrentDisplayTime } from "@/lib/time";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -47,6 +51,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useToast } from "@/components/ui/use-toast";
+import { useUndoToast } from "@/hooks/use-undo-toast";
 import { ApiError } from "@/lib/api";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
@@ -155,8 +160,10 @@ const DatePickerField = ({ id, label, value, onChange, max, min, disabled }: Dat
 interface FormState {
   t_date: string;
   u_date: string;
+  transaction_time: string;
   finance_type_id: string;
   department_id: string;
+  account_id: string;
   narration: string;
   amount: string;
   expected_amount: string;
@@ -178,8 +185,10 @@ const createDefaultFormState = (): FormState => {
   return {
     t_date: currentDate,
     u_date: currentDate,
+    transaction_time: getCurrentDisplayTime(),
     finance_type_id: "",
     department_id: "",
+    account_id: "",
     narration: "",
     amount: "",
     expected_amount: "",
@@ -199,6 +208,16 @@ const defaultBillFormState: BillFormState = {
   type: "",
   file: null,
   fileName: "",
+};
+
+const getNatureIndicatorColor = (nature?: TransactionNature) => {
+  if (nature === "Credit") {
+    return "bg-emerald-500";
+  }
+  if (nature === "Debit") {
+    return "bg-red-500";
+  }
+  return "bg-muted-foreground/40";
 };
 
 const formatCurrency = (amount: number) =>
@@ -231,8 +250,10 @@ const mapTransactionToFormState = (txn: Transaction): FormState => {
   return {
     t_date: txn.t_date,
     u_date: txn.u_date ?? txn.t_date,
+    transaction_time: format24HourToDisplay(txn.transaction_time ?? "") || getCurrentDisplayTime(),
     finance_type_id: txn.finance_type_id,
     department_id: txn.department_id,
+    account_id: txn.account_id ?? "",
     narration: txn.narration,
     amount: String(amount),
     expected_amount: expectedAmount > 0 ? String(expectedAmount) : "",
@@ -241,6 +262,7 @@ const mapTransactionToFormState = (txn: Transaction): FormState => {
 
 export const TransactionsTable = () => {
   const { toast } = useToast();
+  const showUndoToast = useUndoToast();
   const queryClient = useQueryClient();
   const today = getTodayIso();
 
@@ -310,6 +332,11 @@ export const TransactionsTable = () => {
     queryFn: () => fetchDepartments(200),
   });
 
+  const accountsQuery = useQuery({
+    queryKey: ["accounts", "for-transactions"],
+    queryFn: () => fetchAccounts(200),
+  });
+
   const documentTypesQuery = useQuery({
     queryKey: ["bill-document-types"],
     queryFn: () => fetchDocumentTypes(),
@@ -326,12 +353,17 @@ export const TransactionsTable = () => {
   }, [transactionsQuery]);
   const financeTypes = financeTypesQuery.data ?? [];
   const departments = departmentsQuery.data ?? [];
+  const accounts = accountsQuery.data ?? [];
   const documentTypes = documentTypesQuery.data ?? defaultDocumentTypes;
   const getPrimaryDocumentType = () => documentTypes[0] ?? "";
 
   const selectedFinanceType = useMemo(
     () => financeTypes.find((type) => type.type_id === formState.finance_type_id),
     [financeTypes, formState.finance_type_id],
+  );
+  const selectedAccount = useMemo(
+    () => accounts.find((account) => account.account_id === formState.account_id),
+    [accounts, formState.account_id],
   );
   const expectedAmountLabel =
     selectedFinanceType?.transaction_nature === "Credit"
@@ -404,6 +436,7 @@ export const TransactionsTable = () => {
       ...createDefaultFormState(),
       finance_type_id: financeTypes[0]?.type_id ?? "",
       department_id: departments[0]?.dept_id ?? "",
+      account_id: accounts[0]?.account_id ?? "",
     }));
     resetNewBillState();
   };
@@ -414,6 +447,7 @@ export const TransactionsTable = () => {
       ...createDefaultFormState(),
       finance_type_id: financeTypes[0]?.type_id ?? "",
       department_id: departments[0]?.dept_id ?? "",
+      account_id: accounts[0]?.account_id ?? "",
     });
     resetNewBillState();
     setDialogOpen(true);
@@ -468,10 +502,17 @@ export const TransactionsTable = () => {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (id: number) => deleteTransaction(id),
-    onSuccess: () => {
-      toast({ title: "Transaction deleted" });
+    mutationFn: ({ id }: { id: number; reference: string }) => deleteTransaction(id),
+    onSuccess: (_result, variables) => {
       queryInvalidation();
+      showUndoToast({
+        entity: "Transaction",
+        identifier: variables.reference,
+        onUndo: async () => {
+          await restoreTransaction(variables.id);
+          queryInvalidation();
+        },
+      });
     },
     onError: (error: unknown) => showError(error, "Unable to delete transaction"),
   });
@@ -607,6 +648,15 @@ const exportMutation = useMutation<TransactionExportResult, unknown, Transaction
       return;
     }
 
+    if (!formState.account_id) {
+      toast({
+        title: "Account required",
+        description: "Please choose which account this transaction impacts.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     // Get the selected finance type to determine transaction nature
     const selectedFinanceType = financeTypes.find(
       (type) => type.type_id === formState.finance_type_id
@@ -623,12 +673,27 @@ const exportMutation = useMutation<TransactionExportResult, unknown, Transaction
 
     // Use transaction_nature from the finance type to determine debit/credit
     const isDebit = selectedFinanceType.transaction_nature === "Debit";
+    const normalizedTime = displayTimeTo24Hour(formState.transaction_time);
+
+    if (!normalizedTime) {
+      toast({
+        title: "Invalid time",
+        description: "Please select a valid transaction time (e.g., 03:45 PM).",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const transactionDateTime = combineDateAndTime(formState.t_date, normalizedTime);
 
     const payload: TransactionPayload = {
       t_date: formState.t_date,
       u_date: formState.u_date,
+      transaction_time: normalizedTime,
+      transaction_datetime: transactionDateTime,
       finance_type_id: formState.finance_type_id,
       department_id: formState.department_id,
+      account_id: formState.account_id,
       narration: formState.narration,
       debit: isDebit ? amount : 0,
       credit: isDebit ? 0 : amount,
@@ -781,11 +846,12 @@ const exportMutation = useMutation<TransactionExportResult, unknown, Transaction
       `Delete transaction ${transaction.reference}? This cannot be undone.`,
     );
     if (confirmed) {
-      deleteMutation.mutate(transaction.id);
+      deleteMutation.mutate({ id: transaction.id, reference: transaction.reference });
     }
   };
 
-  const loadingFinanceData = financeTypesQuery.isLoading || departmentsQuery.isLoading;
+  const loadingFinanceData =
+    financeTypesQuery.isLoading || departmentsQuery.isLoading || accountsQuery.isLoading;
 
   const resetFilters = () => {
     setSearchQuery("");
@@ -811,12 +877,12 @@ const exportMutation = useMutation<TransactionExportResult, unknown, Transaction
   return (
     <TooltipProvider delayDuration={150}>
       <div className="space-y-4 md:space-y-6">
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between md:gap-4">
+        <div className="flex flex-col gap-3 rounded-2xl border border-[hsl(var(--topbar-border))] bg-[hsl(var(--topbar-bg))] p-4 text-[hsl(var(--topbar-text))] shadow-sm md:flex-row md:items-center md:justify-between md:gap-4">
           <div className="flex-1 space-y-1 text-center md:text-left">
-            <h2 className="text-xl md:text-2xl font-bold text-foreground">
+            <h2 className="text-xl md:text-2xl font-bold text-[hsl(var(--topbar-text))]">
               Exact Accounts Transactions
             </h2>
-            <p className="text-xs md:text-sm text-muted-foreground">
+            <p className="text-xs md:text-sm text-[hsl(var(--topbar-muted))]">
               Complete ledger view with {transactions.length} of {totalTransactions} transactions
             </p>
           </div>
@@ -1227,7 +1293,7 @@ const exportMutation = useMutation<TransactionExportResult, unknown, Transaction
       </div>
 
       <Dialog open={dialogOpen} onOpenChange={(open) => !open && closeDialog()}>
-        <DialogContent className="max-w-2xl overflow-hidden p-0">
+        <DialogContent className="w-[min(95vw,720px)] max-w-2xl overflow-hidden p-0">
           <div className="flex h-full max-h-[90vh] flex-col">
             <DialogHeader className="border-b border-border/50 px-6 py-5">
               <DialogTitle>{editing ? "Edit transaction" : "New transaction"}</DialogTitle>
@@ -1236,7 +1302,7 @@ const exportMutation = useMutation<TransactionExportResult, unknown, Transaction
             <form className="flex flex-1 flex-col overflow-hidden" onSubmit={handleSubmit}>
               <ScrollArea className="flex-1">
                 <div className="space-y-4 px-6 py-5">
-                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
               <div className="space-y-2">
                 <DatePickerField
                   id="transaction-date"
@@ -1247,6 +1313,21 @@ const exportMutation = useMutation<TransactionExportResult, unknown, Transaction
                     setFormState((prev) => ({
                       ...prev,
                       t_date: value,
+                    }))
+                  }
+                />
+              </div>
+
+              <div className="space-y-2">
+                <TimePickerField
+                  id="transaction-time"
+                  label="Transaction Time"
+                  value={formState.transaction_time}
+                  granularityMinutes={1}
+                  onChange={(value) =>
+                    setFormState((prev) => ({
+                      ...prev,
+                      transaction_time: value,
                     }))
                   }
                 />
@@ -1273,16 +1354,76 @@ const exportMutation = useMutation<TransactionExportResult, unknown, Transaction
                   }}
                 >
                   <SelectTrigger id="finance-type">
-                    <SelectValue placeholder="Select finance type" />
+                    <SelectValue placeholder="Select finance type">
+                      {selectedFinanceType && (
+                        <span className="flex items-center gap-2">
+                          <span
+                            aria-hidden
+                            className={cn(
+                              "h-2 w-2 rounded-full",
+                              getNatureIndicatorColor(selectedFinanceType.transaction_nature),
+                            )}
+                          />
+                          <span>{selectedFinanceType.name}</span>
+                        </span>
+                      )}
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectContent>
-                    {financeTypes.map((type) => (
-                      <SelectItem key={type.type_id} value={type.type_id}>
-                        {type.name}
+                    {financeTypes.map((type) => {
+                      const indicatorColor = getNatureIndicatorColor(type.transaction_nature);
+                      return (
+                        <SelectItem key={type.type_id} value={type.type_id}>
+                          <span className="flex items-center gap-2">
+                            <span aria-hidden className={cn("h-2 w-2 rounded-full", indicatorColor)} />
+                            <span>{type.name}</span>
+                          </span>
+                        </SelectItem>
+                      );
+                    })}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="account">Account</Label>
+                <Select
+                  value={formState.account_id}
+                  onValueChange={(value) =>
+                    setFormState((prev) => ({ ...prev, account_id: value }))
+                  }
+                  disabled={!accounts.length}
+                >
+                  <SelectTrigger id="account">
+                    <SelectValue placeholder="Select account">
+                      {selectedAccount && (
+                        <span className="flex flex-col">
+                          <span className="font-medium">{selectedAccount.name}</span>
+                          <span className="text-xs text-muted-foreground">
+                            {formatCurrency(selectedAccount.current_balance)}
+                          </span>
+                        </span>
+                      )}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent>
+                    {accounts.map((account) => (
+                      <SelectItem key={account.account_id} value={account.account_id}>
+                        <span className="flex flex-col">
+                          <span className="font-medium">{account.name}</span>
+                          <span className="text-xs text-muted-foreground">
+                            {formatCurrency(account.current_balance)}
+                          </span>
+                        </span>
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
+                {!accounts.length && (
+                  <p className="text-xs text-muted-foreground">
+                    No accounts available. Add one from the Accounts panel before recording transactions.
+                  </p>
+                )}
               </div>
 
               <div className="space-y-2">
@@ -1565,6 +1706,7 @@ const exportMutation = useMutation<TransactionExportResult, unknown, Transaction
         }}
         financeTypes={financeTypes}
         departments={departments}
+        accounts={accounts}
         onManageBill={handleManageBillFromDetail}
         onSuccess={() => {
           queryInvalidation();
@@ -1572,7 +1714,7 @@ const exportMutation = useMutation<TransactionExportResult, unknown, Transaction
       />
 
       <Dialog open={billDialogOpen} onOpenChange={(open) => !open && closeBillDialog()}>
-        <DialogContent className="max-w-lg overflow-hidden p-0">
+        <DialogContent className="w-[min(95vw,520px)] max-w-lg overflow-hidden p-0">
           <div className="flex h-full max-h-[85vh] flex-col">
             <DialogHeader className="border-b border-border/50 px-6 py-5">
               <DialogTitle>

@@ -22,3 +22,7 @@ export function deleteAccount(accountId: string) {
   return mockDb.deleteAccount(accountId);
 }
 
+export function restoreAccount(accountId: string) {
+  return mockDb.restoreAccount(accountId);
+}
+

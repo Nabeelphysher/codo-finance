@@ -1,7 +1,17 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Account, AccountType } from "@/types/api";
-import { AccountPayload, createAccount, deleteAccount, fetchAccounts, updateAccount } from "@/services/accounts";
+import { Account, AccountType, Transaction } from "@/types/api";
+import {
+  AccountPayload,
+  createAccount,
+  deleteAccount,
+  fetchAccounts,
+  updateAccount,
+  restoreAccount,
+} from "@/services/accounts";
+import { fetchTransactions } from "@/services/transactions";
+import { fetchFinanceTypes } from "@/services/financeTypes";
+import { fetchDepartments } from "@/services/departments";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -9,6 +19,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
@@ -21,10 +32,19 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { useToast } from "@/components/ui/use-toast";
+import { useUndoToast } from "@/hooks/use-undo-toast";
 import { formatCurrency } from "@/lib/format";
 import { ApiError } from "@/lib/api";
-import { Loader2, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Loader2, Pencil, Plus, RefreshCw, Trash2, Share2, Mail, Copy } from "lucide-react";
+import { TransactionDetailModal } from "@/components/TransactionDetailModal";
+import { format } from "date-fns";
 
 const accountTypes: AccountType[] = ["Bank Account", "Cash", "Credit Card", "Debit Card"];
 
@@ -60,20 +80,125 @@ const defaultFormState: FormState = {
   is_active: true,
 };
 
+interface AccountLedgerRow {
+  transaction: Transaction;
+  runningBalance: number;
+  timestamp: Date;
+}
+
 export const AccountsPanel = () => {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const showUndoToast = useUndoToast();
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Account | null>(null);
   const [formState, setFormState] = useState<FormState>(defaultFormState);
   const [detailDialogOpen, setDetailDialogOpen] = useState(false);
   const [viewingAccount, setViewingAccount] = useState<Account | null>(null);
+  const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
+  const [historyAccount, setHistoryAccount] = useState<Account | null>(null);
+  const [historyTransactionId, setHistoryTransactionId] = useState<number | null>(null);
+  const [historyDetailOpen, setHistoryDetailOpen] = useState(false);
 
   const accountsQuery = useQuery({
     queryKey: ["accounts"],
     queryFn: () => fetchAccounts(200),
   });
+
+  const financeTypesQuery = useQuery({
+    queryKey: ["finance-types", "for-account-history"],
+    queryFn: () => fetchFinanceTypes(200),
+  });
+
+  const departmentsQuery = useQuery({
+    queryKey: ["departments", "for-account-history"],
+    queryFn: () => fetchDepartments(200),
+  });
+
+  const historyTransactionsQuery = useQuery({
+    queryKey: ["account-ledger", historyAccount?.account_id ?? "none"],
+    queryFn: () =>
+      fetchTransactions({
+        account_id: historyAccount?.account_id ?? "",
+        per_page: 500,
+      }),
+    enabled: historyDialogOpen && Boolean(historyAccount?.account_id),
+  });
+
+  const accounts = accountsQuery.data ?? [];
+  const financeTypes = financeTypesQuery.data ?? [];
+  const departments = departmentsQuery.data ?? [];
+
+  const historyLedgerRows = useMemo<AccountLedgerRow[]>(() => {
+    if (!historyAccount) {
+      return [];
+    }
+
+    const dataset = historyTransactionsQuery.data?.data ?? [];
+    if (!dataset.length) {
+      return [];
+    }
+
+    const relevant = dataset.filter((txn) => txn.account_id === historyAccount.account_id);
+    if (!relevant.length) {
+      return [];
+    }
+
+    const ascending = [...relevant].sort(
+      (a, b) => getTransactionDate(a).getTime() - getTransactionDate(b).getTime(),
+    );
+
+    let balance = historyAccount.opening_balance ?? 0;
+    const computed = ascending.map((txn) => {
+      balance += (txn.credit ?? 0) - (txn.debit ?? 0);
+      return {
+        transaction: txn,
+        runningBalance: balance,
+        timestamp: getTransactionDate(txn),
+      };
+    });
+
+    return computed.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+  }, [historyAccount, historyTransactionsQuery.data]);
+
+  const historyTotals = useMemo(
+    () =>
+      historyLedgerRows.reduce(
+        (acc, row) => ({
+          debit: acc.debit + (row.transaction.debit ?? 0),
+          credit: acc.credit + (row.transaction.credit ?? 0),
+        }),
+        { debit: 0, credit: 0 },
+      ),
+    [historyLedgerRows],
+  );
+
+  const lastTransactionLabel = historyLedgerRows.length
+    ? format(historyLedgerRows[0].timestamp, "dd MMM yyyy, hh:mm a")
+    : "—";
+
+  const openHistoryDialogForAccount = (account: Account) => {
+    setHistoryAccount(account);
+    setHistoryDialogOpen(true);
+  };
+
+  const closeHistoryDialog = () => {
+    setHistoryDialogOpen(false);
+    setHistoryAccount(null);
+    setHistoryDetailOpen(false);
+    setHistoryTransactionId(null);
+  };
+
+  const openHistoryTransactionDetail = (transactionId: number) => {
+    setHistoryTransactionId(transactionId);
+    setHistoryDetailOpen(true);
+  };
+
+  const closeHistoryTransactionDetail = () => {
+    setHistoryTransactionId(null);
+    setHistoryDetailOpen(false);
+  };
 
   const showError = (error: unknown, fallback: string) => {
     const message = error instanceof ApiError ? error.message : fallback;
@@ -106,10 +231,17 @@ export const AccountsPanel = () => {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (accountId: string) => deleteAccount(accountId),
-    onSuccess: () => {
-      toast({ title: "Account deleted" });
+    mutationFn: ({ accountId }: { accountId: string; label: string }) => deleteAccount(accountId),
+    onSuccess: (_result, variables) => {
       queryClient.invalidateQueries({ queryKey: ["accounts"] });
+      showUndoToast({
+        entity: "Account",
+        identifier: variables.label,
+        onUndo: async () => {
+          await restoreAccount(variables.accountId);
+          queryClient.invalidateQueries({ queryKey: ["accounts"] });
+        },
+      });
     },
     onError: (error: unknown) => showError(error, "Unable to delete account"),
   });
@@ -128,6 +260,39 @@ export const AccountsPanel = () => {
   const closeDetailDialog = () => {
     setDetailDialogOpen(false);
     setViewingAccount(null);
+  };
+
+  const handleShareCopy = (account: Account) => {
+    const text = formatAccountDetailsForSharing(account);
+    navigator.clipboard.writeText(text).then(
+      () => {
+        toast({
+          title: "Copied to clipboard",
+          description: "Account details have been copied to your clipboard.",
+        });
+      },
+      () => {
+        toast({
+          title: "Copy failed",
+          description: "Unable to copy to clipboard. Please try again.",
+          variant: "destructive",
+        });
+      },
+    );
+  };
+
+  const handleShareEmail = (account: Account) => {
+    const text = formatAccountDetailsForSharing(account);
+    const subject = encodeURIComponent(`CODO Account Details: ${account.name}`);
+    const body = encodeURIComponent(text);
+    window.location.href = `mailto:?subject=${subject}&body=${body}`;
+  };
+
+  const handleShareWhatsApp = (account: Account) => {
+    const text = formatAccountDetailsForSharing(account);
+    const encodedText = encodeURIComponent(text);
+    const whatsappUrl = `https://wa.me/?text=${encodedText}`;
+    window.open(whatsappUrl, "_blank", "noopener,noreferrer");
   };
 
   const openCreateDialog = () => {
@@ -393,7 +558,9 @@ export const AccountsPanel = () => {
                               size="icon"
                               className="h-9 w-9 rounded-xl text-destructive hover:bg-destructive/10"
                               aria-label="Delete account"
-                              onClick={() => deleteMutation.mutate(account.account_id)}
+                          onClick={() =>
+                            deleteMutation.mutate({ accountId: account.account_id, label: account.name })
+                          }
                               disabled={deleteMutation.isLoading}
                             >
                               <Trash2 className="h-4 w-4" />
@@ -418,7 +585,7 @@ export const AccountsPanel = () => {
         </div>
 
         <Dialog open={dialogOpen} onOpenChange={(open) => !open && closeDialog()}>
-          <DialogContent className="max-w-2xl overflow-hidden p-0">
+          <DialogContent className="w-[min(95vw,720px)] max-w-2xl overflow-hidden p-0">
             <div className="flex h-full max-h-[90vh] flex-col">
               <DialogHeader className="border-b border-border px-6 py-5">
                 <DialogTitle>{editing ? "Edit account" : "New account"}</DialogTitle>
@@ -642,11 +809,33 @@ export const AccountsPanel = () => {
         </Dialog>
 
         <Dialog open={detailDialogOpen} onOpenChange={(open) => !open && closeDetailDialog()}>
-          <DialogContent className="max-w-2xl overflow-hidden p-0">
+          <DialogContent className="w-[min(95vw,720px)] max-w-2xl overflow-hidden p-0">
             {viewingAccount && (
               <div className="flex max-h-[90vh] flex-col">
-                <DialogHeader className="border-b border-border px-6 py-5">
-                  <DialogTitle>{`Account Details: ${viewingAccount.name}`}</DialogTitle>
+                <DialogHeader className="flex flex-row items-center justify-between border-b border-border px-6 py-5">
+                  <DialogTitle className="m-0">{`Account Details: ${viewingAccount.name}`}</DialogTitle>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="icon" className="h-9 w-9">
+                        <Share2 className="h-4 w-4" />
+                        <span className="sr-only">Share account details</span>
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={() => handleShareCopy(viewingAccount)}>
+                        <Copy className="mr-2 h-4 w-4" />
+                        Copy Details to Clipboard
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => handleShareEmail(viewingAccount)}>
+                        <Mail className="mr-2 h-4 w-4" />
+                        Share via Email
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => handleShareWhatsApp(viewingAccount)}>
+                        <Share2 className="mr-2 h-4 w-4" />
+                        Share via WhatsApp
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </DialogHeader>
                 <div className="space-y-4 overflow-y-auto px-6 py-5">
                   <div className="grid gap-4 md:grid-cols-2">
@@ -702,14 +891,170 @@ export const AccountsPanel = () => {
                     )}
                 </div>
                 <DialogFooter className="border-t border-border px-6 py-4">
-                  <Button type="button" variant="outline" onClick={closeDetailDialog}>
-                    Close
-                  </Button>
+                  <div className="flex w-full flex-col gap-2 sm:flex-row sm:justify-between">
+                    <Button type="button" variant="outline" onClick={closeDetailDialog}>
+                      Close
+                    </Button>
+                    <Button
+                      type="button"
+                      onClick={() => viewingAccount && openHistoryDialogForAccount(viewingAccount)}
+                      disabled={!viewingAccount}
+                    >
+                      View History
+                    </Button>
+                  </div>
                 </DialogFooter>
               </div>
             )}
           </DialogContent>
         </Dialog>
+
+        <Dialog open={historyDialogOpen} onOpenChange={(open) => !open && closeHistoryDialog()}>
+          <DialogContent className="w-[min(96vw,1200px)] max-w-5xl overflow-hidden p-0">
+            {historyAccount ? (
+              <div className="flex max-h-[90vh] flex-col">
+                <div className="border-b border-border bg-card/95 px-6 py-5 backdrop-blur supports-[backdrop-filter]:bg-card/75">
+                  <DialogHeader>
+                    <DialogTitle className="text-lg">{`Transaction History: ${historyAccount.name}`}</DialogTitle>
+                    <DialogDescription>
+                      Review every debit and credit that has impacted this account&apos;s balance.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <HistorySummaryCard label="Current Balance" value={formatCurrency(historyAccount.current_balance ?? historyAccount.opening_balance)} />
+                    <HistorySummaryCard label="Initial Balance" value={formatCurrency(historyAccount.opening_balance)} muted />
+                    <HistorySummaryCard label="Total Entries" value={historyLedgerRows.length.toString()} muted />
+                    <HistorySummaryCard label="Last Transaction" value={lastTransactionLabel} muted />
+                  </div>
+                </div>
+
+                <div className="flex-1 overflow-hidden bg-background">
+                  {historyTransactionsQuery.isLoading ? (
+                    <div className="flex h-full items-center justify-center gap-2 px-6 py-8 text-muted-foreground">
+                      <Loader2 className="h-5 w-5 animate-spin" />
+                      Loading ledger history...
+                    </div>
+                  ) : historyTransactionsQuery.isError ? (
+                    <div className="flex h-full flex-col items-center justify-center gap-4 px-6 py-8 text-center">
+                      <p className="text-sm text-muted-foreground">
+                        Unable to load the ledger history right now. Please try again.
+                      </p>
+                      <Button onClick={() => historyTransactionsQuery.refetch()}>Retry</Button>
+                    </div>
+                  ) : historyLedgerRows.length === 0 ? (
+                    <div className="flex h-full flex-col items-center justify-center gap-2 px-6 py-8 text-center text-muted-foreground">
+                      <p className="text-base font-medium text-foreground">No transactions yet</p>
+                      <p className="text-sm text-muted-foreground">
+                        Debits and credits posted to this account will appear here for audit review.
+                      </p>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="px-4 py-4">
+                        <div className="rounded-lg border border-border/60">
+                          <div className="overflow-x-auto">
+                            <div className="max-h-[55vh] overflow-y-auto">
+                              <Table className="min-w-[960px] text-sm">
+                                <colgroup>
+                                  <col className="w-[18%]" />
+                                  <col className="w-[12%]" />
+                                  <col className="w-[26%]" />
+                                  <col className="w-[14%]" />
+                                  <col className="w-[10%]" />
+                                  <col className="w-[10%]" />
+                                  <col className="w-[10%]" />
+                                </colgroup>
+                                <TableHeader className="sticky top-0 z-10 bg-card shadow-sm">
+                                  <TableRow>
+                                    <TableHead>Date / Time</TableHead>
+                                    <TableHead>TXN ID</TableHead>
+                                    <TableHead>Description</TableHead>
+                                    <TableHead>Finance Type</TableHead>
+                                    <TableHead className="text-right">Debit (₹)</TableHead>
+                                    <TableHead className="text-right">Credit (₹)</TableHead>
+                                    <TableHead className="text-right">Running Balance</TableHead>
+                                  </TableRow>
+                                </TableHeader>
+                                <TableBody>
+                                  {historyLedgerRows.map((row) => (
+                                    <TableRow key={row.transaction.id} className="odd:bg-muted/40">
+                                      <TableCell className="align-top">
+                                        <p className="font-medium text-foreground">{formatLedgerTimestamp(row.transaction)}</p>
+                                        <p className="text-xs text-muted-foreground">
+                                          Posted on {row.transaction.t_date ?? "—"}
+                                        </p>
+                                      </TableCell>
+                                      <TableCell className="align-top">
+                                        <button
+                                          type="button"
+                                          className="font-mono text-sm font-semibold text-primary underline-offset-4 hover:underline"
+                                          onClick={() => openHistoryTransactionDetail(row.transaction.id)}
+                                        >
+                                          {row.transaction.reference}
+                                        </button>
+                                      </TableCell>
+                                      <TableCell className="align-top">
+                                        <p className="font-medium text-foreground">{row.transaction.narration ?? "—"}</p>
+                                        <p className="text-xs text-muted-foreground">
+                                          {row.transaction.department?.name ?? row.transaction.finance_type?.category ?? "—"}
+                                        </p>
+                                      </TableCell>
+                                      <TableCell className="align-top">
+                                        {row.transaction.finance_type?.name ?? row.transaction.finance_type_id ?? "—"}
+                                      </TableCell>
+                                      <TableCell className="align-top text-right font-mono text-destructive">
+                                        {row.transaction.debit > 0 ? formatCurrency(row.transaction.debit) : "—"}
+                                      </TableCell>
+                                      <TableCell className="align-top text-right font-mono text-green-600">
+                                        {row.transaction.credit > 0 ? formatCurrency(row.transaction.credit) : "—"}
+                                      </TableCell>
+                                      <TableCell className="align-top text-right font-mono font-semibold text-foreground">
+                                        {formatCurrency(row.runningBalance)}
+                                      </TableCell>
+                                    </TableRow>
+                                  ))}
+                                </TableBody>
+                              </Table>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="border-t border-border bg-muted/30 px-4 py-3 text-sm">
+                        <div className="flex flex-wrap gap-6">
+                          <div>
+                            <p className="text-xs uppercase text-muted-foreground">Total Debit (₹)</p>
+                            <p className="font-semibold text-destructive">{formatCurrency(historyTotals.debit)}</p>
+                          </div>
+                          <div>
+                            <p className="text-xs uppercase text-muted-foreground">Total Credit (₹)</p>
+                            <p className="font-semibold text-green-600">{formatCurrency(historyTotals.credit)}</p>
+                          </div>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+
+              </div>
+            ) : (
+              <div className="px-6 py-8 text-center text-muted-foreground">Select an account to view history.</div>
+            )}
+          </DialogContent>
+        </Dialog>
+
+        <TransactionDetailModal
+          open={historyDetailOpen}
+          transactionId={historyTransactionId}
+          onClose={closeHistoryTransactionDetail}
+          financeTypes={financeTypes}
+          departments={departments}
+          accounts={accounts}
+          onSuccess={() => {
+            queryClient.invalidateQueries({ queryKey: ["transactions"] });
+            queryClient.invalidateQueries({ queryKey: ["account-ledger"] });
+            queryClient.invalidateQueries({ queryKey: ["accounts"] });
+          }}
+        />
       </div>
     </TooltipProvider>
   );
@@ -730,6 +1075,67 @@ const DetailField = ({
   </div>
 );
 
+const HistorySummaryCard = ({ label, value, muted = false }: { label: string; value: string; muted?: boolean }) => (
+  <div className="rounded-lg border border-border/70 bg-muted/30 px-3 py-2 shadow-sm">
+    <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
+    <p className={`text-base font-semibold ${muted ? "text-muted-foreground" : "text-foreground"}`}>{value}</p>
+  </div>
+);
+
+const getTransactionDate = (transaction: Transaction): Date => {
+  if (transaction.transaction_datetime) {
+    const parsed = new Date(transaction.transaction_datetime);
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed;
+    }
+  }
+
+  if (transaction.t_date) {
+    const time = transaction.transaction_time ?? "00:00";
+    const normalizedTime = time.length === 5 ? `${time}:00` : time;
+    const candidate = new Date(`${transaction.t_date}T${normalizedTime}`);
+    if (!Number.isNaN(candidate.getTime())) {
+      return candidate;
+    }
+  }
+
+  if (transaction.created_at) {
+    const created = new Date(transaction.created_at);
+    if (!Number.isNaN(created.getTime())) {
+      return created;
+    }
+  }
+
+  return new Date();
+};
+
+const formatLedgerTimestamp = (transaction: Transaction) =>
+  format(getTransactionDate(transaction), "dd-MM-yyyy hh:mm a");
+
 const isCardAccountType = (type: AccountType) => type === "Credit Card" || type === "Debit Card";
 const isBankAccountType = (type: AccountType) => type === "Bank Account";
+
+const formatAccountDetailsForSharing = (account: Account): string => {
+  if (account.account_type === "Bank Account") {
+    return [
+      `Holder Name: ${account.holder_name}`,
+      `Bank Name: ${account.bank_name ?? "—"}`,
+      `Branch: ${account.branch_name ?? "—"}`,
+      `Account Number: ${account.account_number ?? "—"}`,
+      `IFSC Code: ${account.ifsc_code ?? "—"}`,
+    ].join("\n");
+  } else {
+    // Cash, Credit Card, or Debit Card
+    const reference = account.account_number ?? account.reference_number ?? "—";
+    return `**ACCOUNT REFERENCE**
+
+Account Name: ${account.name}
+
+Holder Name: ${account.holder_name}
+
+Type: ${account.account_type}
+
+Reference: ${reference}`;
+  }
+};
 

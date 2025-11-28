@@ -33,16 +33,18 @@ import { cn } from "@/lib/utils";
 import { formatCurrency, formatDate } from "@/lib/format";
 import { fetchDepartments } from "@/services/departments";
 import {
+  fetchIncomeTaxStatementReport,
   fetchProfitLossReport,
   fetchTrialBalanceReport,
   type BaseReportFilters,
+  type IncomeTaxStatementReport,
   type ProfitLossReport,
   type ReportsResult,
   type TrialBalanceReport,
 } from "@/services/reports";
 import type { Department } from "@/types/api";
 
-type ReportType = "trial-balance" | "profit-loss";
+type ReportType = "trial-balance" | "profit-loss" | "income-tax";
 
 interface ReportRequest {
   type: ReportType;
@@ -52,6 +54,7 @@ interface ReportRequest {
 const REPORT_TYPE_LABELS: Record<ReportType, string> = {
   "trial-balance": "Trial Balance",
   "profit-loss": "Profit & Loss",
+  "income-tax": "Income Tax Statement",
 };
 
 const DEFAULT_DATE_FORMAT = "yyyy-MM-dd";
@@ -186,13 +189,86 @@ const buildProfitLossTableHtml = (report: ProfitLossReport) => {
   `;
 };
 
+const buildIncomeTaxSectionHtml = (title: string, sections: IncomeTaxStatementReport["incomeSections"]) => {
+  if (!sections.length) return "";
+
+  const rows = sections
+    .map(
+      (section) => `
+        <h4>${section.heading}</h4>
+        <table border="1" cellspacing="0" cellpadding="6" style="margin-bottom:12px;">
+          <thead>
+            <tr style="background:#f3f4f6;">
+              <th align="left">Account</th>
+              <th align="right">Amount (₹)</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${section.entries
+              .map(
+                (entry) => `
+                  <tr>
+                    <td>${entry.accountName}</td>
+                    <td style="text-align:right;">${entry.amount.toFixed(2)}</td>
+                  </tr>
+                `,
+              )
+              .join("")}
+          </tbody>
+          <tfoot>
+            <tr style="font-weight:bold;">
+              <td>Total ${section.heading}</td>
+              <td style="text-align:right;">${section.total.toFixed(2)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      `,
+    )
+    .join("");
+
+  return `
+    <h3>${title}</h3>
+    ${rows}
+  `;
+};
+
+const buildIncomeTaxStatementTableHtml = (report: IncomeTaxStatementReport) => `
+  ${buildIncomeTaxSectionHtml("Income", report.incomeSections)}
+  ${buildIncomeTaxSectionHtml("Allowable Deductions", report.deductionSections)}
+  <h3>Taxable Result</h3>
+  <table border="1" cellspacing="0" cellpadding="6">
+    <tbody>
+      <tr>
+        <td>Total Income</td>
+        <td style="text-align:right;">${report.totalIncome.toFixed(2)}</td>
+      </tr>
+      <tr>
+        <td>Total Allowable Deductions</td>
+        <td style="text-align:right;">${report.totalDeductions.toFixed(2)}</td>
+      </tr>
+      <tr style="font-weight:bold;">
+        <td>Net Taxable Income</td>
+        <td style="text-align:right;">${report.netTaxableIncome.toFixed(2)}</td>
+      </tr>
+    </tbody>
+  </table>
+`;
+
 const buildExcelMarkup = (report: ReportsResult) => {
   const header = `
     <h2>${REPORT_TYPE_LABELS[report.reportType as ReportType]}</h2>
     ${
       report.reportType === "trial-balance"
         ? `<p>As at ${report.asOfDate}</p>`
-        : `<p>Period: ${(report as ProfitLossReport).range.start} to ${(report as ProfitLossReport).range.end}</p>`
+        : `<p>Period: ${
+            report.reportType === "income-tax"
+              ? (report as IncomeTaxStatementReport).range.start
+              : (report as ProfitLossReport).range.start
+          } to ${
+            report.reportType === "income-tax"
+              ? (report as IncomeTaxStatementReport).range.end
+              : (report as ProfitLossReport).range.end
+          }</p>`
     }
   `;
 
@@ -200,7 +276,11 @@ const buildExcelMarkup = (report: ReportsResult) => {
     return `${header}${buildTrialBalanceTableHtml(report)}`;
   }
 
-  return `${header}${buildProfitLossTableHtml(report)}`;
+  if (report.reportType === "profit-loss") {
+    return `${header}${buildProfitLossTableHtml(report as ProfitLossReport)}`;
+  }
+
+  return `${header}${buildIncomeTaxStatementTableHtml(report as IncomeTaxStatementReport)}`;
 };
 
 const openPrintWindow = (content: string, title: string) => {
@@ -318,7 +398,10 @@ const ReportsPage = () => {
           asOfDate: filters.endDate ?? filters.startDate,
         });
       }
-      return fetchProfitLossReport(filters);
+      if (type === "profit-loss") {
+        return fetchProfitLossReport(filters);
+      }
+      return fetchIncomeTaxStatementReport(filters);
     },
     onError: (error: unknown) => {
       const message = error instanceof Error ? error.message : "Failed to build the report.";
@@ -349,12 +432,13 @@ const ReportsPage = () => {
 
   const handleGenerate = useCallback(async () => {
     if (
-      reportType === "profit-loss" &&
+      (reportType === "profit-loss" || reportType === "income-tax") &&
       (!filtersForRequest.startDate || !filtersForRequest.endDate)
     ) {
       toast({
         title: "Date range required",
-        description: "Please select a valid start and end date to generate the Profit & Loss report.",
+        description:
+          "Please select a valid start and end date to generate this report.",
         variant: "destructive",
       });
       return;
@@ -382,7 +466,9 @@ const ReportsPage = () => {
         ${
           activeReport.reportType === "trial-balance"
             ? `<p>As at ${formatDate(activeReport.asOfDate)}</p>`
-            : `<p>Period: ${formatDate((activeReport as ProfitLossReport).range.start)} – ${formatDate((activeReport as ProfitLossReport).range.end)}</p>`
+            : activeReport.reportType === "profit-loss"
+              ? `<p>Period: ${formatDate((activeReport as ProfitLossReport).range.start)} – ${formatDate((activeReport as ProfitLossReport).range.end)}</p>`
+              : `<p>Period: ${formatDate((activeReport as IncomeTaxStatementReport).range.start)} – ${formatDate((activeReport as IncomeTaxStatementReport).range.end)}</p>`
         }
       </header>
     `;
@@ -435,11 +521,22 @@ const ReportsPage = () => {
       );
     }
 
+    if (activeReport.reportType === "income-tax") {
+      return (
+        activeReport.incomeSections.some((section) => section.entries.length > 0) ||
+        activeReport.deductionSections.some((section) => section.entries.length > 0)
+      );
+    }
+
     return activeReport.entries.length > 0;
   }, [activeReport]);
 
   return (
-    <AppLayout title="Reports" subtitle="Generate compliant, auditor-ready statements">
+    <AppLayout
+      title="Reports"
+      subtitle="Generate compliant, auditor-ready statements"
+      disableContentPadding
+    >
       <div className="p-6 md:p-8 space-y-6">
         <section className="flex flex-col gap-4 print:hidden">
           <div className="flex flex-col md:flex-row md:items-center gap-3">
@@ -592,6 +689,13 @@ const ReportsPage = () => {
           {hasData && activeReport?.reportType === "profit-loss" && (
             <ProfitLossView
               report={activeReport as ProfitLossReport}
+              departmentName={selectedDepartmentName}
+            />
+          )}
+
+          {hasData && activeReport?.reportType === "income-tax" && (
+            <IncomeTaxStatementView
+              report={activeReport as IncomeTaxStatementReport}
               departmentName={selectedDepartmentName}
             />
           )}
@@ -770,6 +874,116 @@ const ProfitLossView = ({
     </section>
   </div>
 );
+
+const IncomeTaxStatementView = ({
+  report,
+  departmentName,
+}: {
+  report: IncomeTaxStatementReport;
+  departmentName?: string;
+}) => {
+  const renderSections = (
+    title: string,
+    sections: IncomeTaxStatementReport["incomeSections"],
+    emptyMessage: string,
+  ) => (
+    <section className="space-y-4">
+      <h3 className="text-lg font-semibold tracking-tight text-slate-900">{title}</h3>
+      {sections.length ? (
+        sections.map((section) => (
+          <div
+            key={section.heading}
+            className="space-y-3 rounded-2xl border border-border/60 bg-slate-50 p-4"
+          >
+            <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-base font-semibold text-slate-900">{section.heading}</p>
+              <p className="text-sm font-semibold text-slate-600">
+                Total: {formatCurrency(section.total)}
+              </p>
+            </div>
+            <Table>
+              <TableHeader className="bg-white text-xs uppercase tracking-[0.2em] text-slate-500">
+                <TableRow>
+                  <TableHead className="font-semibold">Account</TableHead>
+                  <TableHead className="text-right font-semibold">Amount (₹)</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {section.entries.map((entry) => (
+                  <TableRow key={entry.financeTypeId} className="border-border/60">
+                    <TableCell className="font-medium text-slate-900">{entry.accountName}</TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {formatCurrency(entry.amount)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        ))
+      ) : (
+        <p className="text-sm text-muted-foreground">{emptyMessage}</p>
+      )}
+    </section>
+  );
+
+  return (
+    <div className="space-y-8 text-foreground">
+      <header className="space-y-1 border-b border-border pb-4">
+        <h2 className="text-2xl font-semibold tracking-tight">Income Tax Statement</h2>
+        <p className="text-sm text-muted-foreground">
+          Period: {formatDate(report.range.start)} – {formatDate(report.range.end)}
+          {departmentName ? ` · Department: ${departmentName}` : " · All Departments"}
+        </p>
+      </header>
+
+      {renderSections("Income", report.incomeSections, "No taxable income recorded.")}
+      {renderSections(
+        "Allowable Deductions",
+        report.deductionSections,
+        "No allowable deductions recorded.",
+      )}
+
+      <section className="rounded-2xl border border-border/70 bg-slate-900 text-white p-6">
+        <div className="flex flex-col gap-6">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-xs uppercase tracking-[0.3em] text-white/70">Total Income</p>
+              <p className="text-xl font-semibold tabular-nums">
+                {formatCurrency(report.totalIncome)}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-[0.3em] text-white/70">
+                Allowable Deductions
+              </p>
+              <p className="text-xl font-semibold tabular-nums">
+                {formatCurrency(report.totalDeductions)}
+              </p>
+            </div>
+          </div>
+          <div className="rounded-xl bg-white/10 p-4">
+            <p className="text-xs uppercase tracking-[0.3em] text-white/70">Net Taxable Income</p>
+            <p className="text-2xl font-semibold tabular-nums">
+              {formatCurrency(report.netTaxableIncome)}
+            </p>
+          </div>
+        </div>
+      </section>
+
+      {report.notes.length > 0 && (
+        <section className="rounded-2xl border border-dashed border-border/70 bg-slate-50 p-4">
+          <p className="text-xs uppercase tracking-[0.3em] text-slate-500 mb-2">Notes</p>
+          <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">
+            {report.notes.map((note) => (
+              <li key={note}>{note}</li>
+            ))}
+          </ul>
+        </section>
+      )}
+    </div>
+  );
+};
 
 export default ReportsPage;
 

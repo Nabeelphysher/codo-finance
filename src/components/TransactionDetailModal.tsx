@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Department, FinanceType, Transaction } from "@/types/api";
+import { Account, Department, FinanceType, Transaction } from "@/types/api";
 import { fetchTransaction, updateTransaction, TransactionPayload } from "@/services/transactions";
 import {
   Dialog,
@@ -17,6 +17,8 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/components/ui/use-toast";
+import { TimePickerField } from "@/components/TimePickerField";
+import { combineDateAndTime, displayTimeTo24Hour, format24HourToDisplay, getCurrentDisplayTime } from "@/lib/time";
 import { Loader2, ExternalLink, Pencil, Save, X, RefreshCw, Link as LinkIcon } from "lucide-react";
 import { format } from "date-fns";
 
@@ -28,6 +30,7 @@ interface TransactionDetailModalProps {
   onClose: () => void;
   financeTypes: FinanceType[];
   departments: Department[];
+  accounts: Account[];
   onSuccess?: () => void;
   onManageBill?: ManageBillHandler;
 }
@@ -51,8 +54,10 @@ const formatDate = (value: string | null | undefined, dateFormat = "dd MMM yyyy"
 interface FormState {
   t_date: string;
   u_date: string;
+  transaction_time: string;
   finance_type_id: string;
   department_id: string;
+  account_id: string;
   debit: string;
   credit: string;
   expected_debit: string;
@@ -63,8 +68,10 @@ interface FormState {
 const emptyForm: FormState = {
   t_date: "",
   u_date: "",
+  transaction_time: "",
   finance_type_id: "",
   department_id: "",
+  account_id: "",
   debit: "",
   credit: "",
   expected_debit: "",
@@ -78,6 +85,7 @@ export const TransactionDetailModal = ({
   onClose,
   financeTypes,
   departments,
+  accounts,
   onSuccess,
   onManageBill,
 }: TransactionDetailModalProps) => {
@@ -94,11 +102,15 @@ export const TransactionDetailModal = ({
 
   useEffect(() => {
     if (transactionQuery.data && open) {
+      const displayTime =
+        format24HourToDisplay(transactionQuery.data.transaction_time ?? "") || getCurrentDisplayTime();
       setFormState({
         t_date: transactionQuery.data.t_date,
         u_date: transactionQuery.data.u_date ?? transactionQuery.data.t_date,
+        transaction_time: displayTime,
         finance_type_id: transactionQuery.data.finance_type_id,
         department_id: transactionQuery.data.department_id,
+        account_id: transactionQuery.data.account_id ?? "",
         debit: String(transactionQuery.data.debit ?? 0),
         credit: String(transactionQuery.data.credit ?? 0),
         expected_debit:
@@ -123,11 +135,14 @@ export const TransactionDetailModal = ({
       queryClient.invalidateQueries({ queryKey: ["transactions"] });
       queryClient.invalidateQueries({ queryKey: ["transaction", transactionId] });
       setIsEditing(false);
+      const displayTime = format24HourToDisplay(updated.transaction_time ?? "") || getCurrentDisplayTime();
       setFormState({
         t_date: updated.t_date,
         u_date: updated.u_date ?? updated.t_date,
+        transaction_time: displayTime,
         finance_type_id: updated.finance_type_id,
         department_id: updated.department_id,
+        account_id: updated.account_id ?? "",
         debit: String(updated.debit ?? 0),
         credit: String(updated.credit ?? 0),
         expected_debit: updated.expected_debit && updated.expected_debit > 0 ? String(updated.expected_debit) : "",
@@ -199,11 +214,35 @@ export const TransactionDetailModal = ({
       return;
     }
 
+    if (!formState.account_id) {
+      toast({
+        title: "Account required",
+        description: "Select which account this transaction belongs to.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const normalizedTime = displayTimeTo24Hour(formState.transaction_time);
+    if (!normalizedTime) {
+      toast({
+        title: "Invalid time",
+        description: "Please provide a valid time in HH:MM AM/PM format.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const transactionDateTime = combineDateAndTime(formState.t_date, normalizedTime);
+
     const payload: TransactionPayload = {
       t_date: formState.t_date,
-        u_date: formState.u_date,
+      u_date: formState.u_date,
+      transaction_time: normalizedTime,
+      transaction_datetime: transactionDateTime,
       finance_type_id: formState.finance_type_id,
       department_id: formState.department_id,
+      account_id: formState.account_id,
       narration: formState.narration,
       debit: debitValue,
       credit: creditValue,
@@ -222,6 +261,10 @@ export const TransactionDetailModal = ({
     () => departments.map((department) => ({ label: department.name, value: department.dept_id })),
     [departments],
   );
+  const accountOptions = useMemo(
+    () => accounts.map((account) => ({ label: account.name, value: account.account_id })),
+    [accounts],
+  );
 
   const renderAuditSection = () => (
     <div className="space-y-3 rounded-xl border border-border bg-muted/40 p-4">
@@ -232,7 +275,9 @@ export const TransactionDetailModal = ({
             {transaction?.reference ?? `TXN${transactionId?.toString().padStart(5, "0")}`}
           </p>
         </div>
-        <Badge variant="outline">{formatDate(transaction?.created_at, "dd MMM yyyy, hh:mm a")}</Badge>
+        <Badge variant="outline">
+          {formatDate(transaction?.transaction_datetime ?? transaction?.created_at, "dd MMM yyyy, hh:mm a")}
+        </Badge>
       </div>
       <div className="grid gap-4 sm:grid-cols-2">
         <div>
@@ -283,6 +328,21 @@ export const TransactionDetailModal = ({
           )}
         </div>
         <div className="space-y-2">
+          <Label>Transaction Time</Label>
+          {isEditing ? (
+            <TimePickerField
+              id="detail-transaction-time"
+              value={formState.transaction_time}
+              granularityMinutes={1}
+              onChange={(value) => setFormState((prev) => ({ ...prev, transaction_time: value }))}
+            />
+          ) : (
+            <p className="text-sm font-medium text-foreground">
+              {format24HourToDisplay(transaction?.transaction_time ?? "") || "—"}
+            </p>
+          )}
+        </div>
+        <div className="space-y-2">
           <Label>Finance Type</Label>
           {isEditing ? (
             <Select
@@ -327,6 +387,43 @@ export const TransactionDetailModal = ({
           ) : (
             <p className="text-sm font-medium text-foreground">
               {transaction?.department?.name ?? transaction?.department_id ?? "—"}
+            </p>
+          )}
+        </div>
+        <div className="space-y-2">
+          <Label>Account</Label>
+          {isEditing ? (
+            <Select
+              value={formState.account_id}
+              onValueChange={(value) => setFormState((prev) => ({ ...prev, account_id: value }))}
+              disabled={!accounts.length}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Select account" />
+              </SelectTrigger>
+              <SelectContent>
+                {accountOptions.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            <div>
+              <p className="text-sm font-medium text-foreground">
+                {transaction?.account?.name ?? transaction?.account_id ?? "—"}
+              </p>
+              {transaction?.account?.current_balance !== undefined && (
+                <p className="text-xs text-muted-foreground">
+                  Current balance: {formatCurrency(transaction.account.current_balance)}
+                </p>
+              )}
+            </div>
+          )}
+          {!accounts.length && isEditing && (
+            <p className="text-xs text-muted-foreground">
+              No accounts available. Add one before updating the ledger entry.
             </p>
           )}
         </div>
@@ -498,11 +595,15 @@ export const TransactionDetailModal = ({
               size="sm"
               onClick={() => {
                 if (transaction) {
+                  const displayTime =
+                    format24HourToDisplay(transaction.transaction_time ?? "") || getCurrentDisplayTime();
                   setFormState({
                     t_date: transaction.t_date,
                     u_date: transaction.u_date ?? transaction.t_date,
+                    transaction_time: displayTime,
                     finance_type_id: transaction.finance_type_id,
                     department_id: transaction.department_id,
+                    account_id: transaction.account_id ?? "",
                     debit: String(transaction.debit ?? 0),
                     credit: String(transaction.credit ?? 0),
                     expected_debit:

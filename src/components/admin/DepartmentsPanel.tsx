@@ -6,6 +6,7 @@ import {
   createDepartment,
   updateDepartment,
   deleteDepartment,
+  restoreDepartment,
   DepartmentPayload,
 } from "@/services/departments";
 import { fetchStaff } from "@/services/staff";
@@ -23,6 +24,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/components/ui/use-toast";
+import { useUndoToast } from "@/hooks/use-undo-toast";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Loader2, Pencil, Plus, RefreshCw, Trash2, ChevronsUpDown, Search, Check, X } from "lucide-react";
@@ -45,6 +47,7 @@ const defaultFormState: FormState = {
 export const DepartmentsPanel = () => {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const showUndoToast = useUndoToast();
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Department | null>(null);
@@ -86,10 +89,17 @@ export const DepartmentsPanel = () => {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (deptId: string) => deleteDepartment(deptId),
-    onSuccess: () => {
-      toast({ title: "Department deleted" });
+    mutationFn: ({ deptId }: { deptId: string; label: string }) => deleteDepartment(deptId),
+    onSuccess: (_result, variables) => {
       queryClient.invalidateQueries({ queryKey: ["departments"] });
+      showUndoToast({
+        entity: "Department",
+        identifier: variables.label,
+        onUndo: async () => {
+          await restoreDepartment(variables.deptId);
+          queryClient.invalidateQueries({ queryKey: ["departments"] });
+        },
+      });
     },
     onError: (error: unknown) => showError(error, "Unable to delete department"),
   });
@@ -319,7 +329,12 @@ export const DepartmentsPanel = () => {
                           size="icon"
                           className="h-9 w-9 rounded-xl text-destructive hover:bg-destructive/10"
                           aria-label="Delete department"
-                          onClick={() => deleteMutation.mutate(department.dept_id)}
+                          onClick={() =>
+                            deleteMutation.mutate({
+                              deptId: department.dept_id,
+                              label: department.name,
+                            })
+                          }
                           disabled={deleteMutation.isLoading}
                         >
                           <Trash2 className="h-4 w-4" />
@@ -349,7 +364,7 @@ export const DepartmentsPanel = () => {
       </div>
 
       <Dialog open={dialogOpen} onOpenChange={(open) => !open && closeDialog()}>
-        <DialogContent>
+        <DialogContent className="w-[min(95vw,560px)]">
           <DialogHeader>
             <DialogTitle>{editing ? "Edit department" : "Create department"}</DialogTitle>
           </DialogHeader>
@@ -499,7 +514,7 @@ export const DepartmentsPanel = () => {
       </Dialog>
 
       <Dialog open={detailDialogOpen} onOpenChange={(open) => !open && closeDetailDialog()}>
-        <DialogContent className="max-w-3xl">
+        <DialogContent className="w-[min(95vw,800px)] max-w-3xl">
           {viewingDepartment && (
             <>
               <DialogHeader>

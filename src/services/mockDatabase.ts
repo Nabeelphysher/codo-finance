@@ -12,6 +12,9 @@ import {
 import type {
   Account,
   AnalyticsSummary,
+  AuditActionType,
+  AuditLog,
+  AuditModule,
   Bill,
   Department,
   FinanceCategory,
@@ -67,6 +70,128 @@ const paginate = <T>(items: T[], perPage: number, currentPage = 1): PaginatedRes
 
 const simulateAsync = async <T>(result: T, delayMs = 120): Promise<T> =>
   new Promise((resolve) => setTimeout(() => resolve(clone(result)), delayMs));
+
+/***************************************************************
+ * Audit Log
+ ***************************************************************/
+
+let auditLogs: AuditLog[] = [];
+
+const getCurrentUser = (): string => {
+  // In a real app, this would get the current authenticated user
+  // For now, default to "System"
+  return "System";
+};
+
+const formatTimestamp = (date: Date): string => {
+  // Format: DD-MM-YYYY HH:MM:SS
+  const day = String(date.getDate()).padStart(2, "0");
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const year = date.getFullYear();
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  const seconds = String(date.getSeconds()).padStart(2, "0");
+  return `${day}-${month}-${year} ${hours}:${minutes}:${seconds}`;
+};
+
+export const createAuditLogEntry = (
+  actionType: AuditActionType,
+  module: AuditModule,
+  itemId: string,
+  itemName: string,
+  details: string,
+): AuditLog => {
+  const log: AuditLog = {
+    id: `AUDIT-${Date.now()}-${randomId()}`,
+    timestamp: formatTimestamp(new Date()),
+    user: getCurrentUser(),
+    action_type: actionType,
+    module,
+    item_id: itemId,
+    item_name: itemName,
+    details,
+  };
+
+  auditLogs = [log, ...auditLogs];
+  return clone(log);
+};
+
+export interface AuditLogFilters {
+  date_from?: string;
+  date_to?: string;
+  user?: string;
+  module?: AuditModule;
+  action_type?: AuditActionType;
+  search?: string;
+}
+
+export const listAuditLogs = (filters: AuditLogFilters = {}): AuditLog[] => {
+  const {
+    date_from,
+    date_to,
+    user,
+    module,
+    action_type,
+    search,
+  } = filters;
+
+  return auditLogs.filter((log) => {
+    // Date range filter
+    if (date_from || date_to) {
+      // Parse DD-MM-YYYY format from timestamp (format: "DD-MM-YYYY HH:MM:SS")
+      const logDateStr = log.timestamp.split(" ")[0]; // Get "DD-MM-YYYY"
+      const [day, month, year] = logDateStr.split("-");
+      const logDate = parseISO(`${year}-${month}-${day}`);
+      
+      if (date_from) {
+        const fromDate = parseISO(date_from);
+        if (logDate < fromDate) return false;
+      }
+      
+      if (date_to) {
+        const toDate = parseISO(date_to);
+        // Include the full day, so compare dates at end of day
+        const toDateEnd = new Date(toDate);
+        toDateEnd.setHours(23, 59, 59, 999);
+        if (logDate > toDateEnd) return false;
+      }
+    }
+
+    // User filter
+    if (user && log.user.toLowerCase() !== user.toLowerCase()) {
+      return false;
+    }
+
+    // Module filter
+    if (module && log.module !== module) {
+      return false;
+    }
+
+    // Action type filter
+    if (action_type && log.action_type !== action_type) {
+      return false;
+    }
+
+    // Search filter
+    if (search) {
+      const needle = search.toLowerCase();
+      const haystack = [
+        log.user,
+        log.module,
+        log.action_type,
+        log.item_id,
+        log.item_name,
+        log.details,
+      ].join(" ").toLowerCase();
+      
+      if (!haystack.includes(needle)) {
+        return false;
+      }
+    }
+
+    return true;
+  });
+};
 
 export interface AnalyticsFilters {
   startDate?: string;
@@ -351,7 +476,22 @@ let financeTypes: FinanceType[] = [
   },
 ];
 
-export const listFinanceTypes = () => clone(financeTypes);
+const deletedFinanceTypes = new Map<string, FinanceType>();
+
+export const listFinanceTypes = () => {
+  const usageLookup = getFinanceTypeUsageCounts();
+
+  return financeTypes.map((type) => {
+    const usageCount = usageLookup.get(type.type_id) ?? 0;
+    const record: FinanceType = {
+      ...clone(type),
+      has_transactions: usageCount > 0,
+      linked_transaction_count: usageCount,
+    };
+
+    return record;
+  });
+};
 
 export const createFinanceTypeRecord = (payload: FinanceTypePayload): FinanceType => {
   const type: FinanceType = {
@@ -375,10 +515,22 @@ export const createFinanceTypeRecord = (payload: FinanceTypePayload): FinanceTyp
   }
 
   financeTypes = [type, ...financeTypes];
+  
+  // Audit log
+  createAuditLogEntry(
+    "CREATED",
+    "Finance Types",
+    type.type_id,
+    type.name,
+    `Created finance type: ${type.name} (${type.category})`,
+  );
+  
   return clone(type);
 };
 
 export const updateFinanceTypeRecord = (typeId: string, payload: Partial<FinanceTypePayload>): FinanceType => {
+  const existing = financeTypes.find((type) => type.type_id === typeId);
+  
   financeTypes = financeTypes.map((type) =>
     type.type_id === typeId
       ? {
@@ -394,11 +546,62 @@ export const updateFinanceTypeRecord = (typeId: string, payload: Partial<Finance
     throw new Error(`Finance type ${typeId} not found`);
   }
 
+  // Audit log - track changes
+  if (existing) {
+    const changes: string[] = [];
+    if (payload.name && existing.name !== updated.name) {
+      changes.push(`Name from "${existing.name}" to "${updated.name}"`);
+    }
+    if (payload.is_active !== undefined && existing.is_active !== updated.is_active) {
+      changes.push(`Status from ${existing.is_active ? "Active" : "Inactive"} to ${updated.is_active ? "Active" : "Inactive"}`);
+    }
+    
+    createAuditLogEntry(
+      "UPDATED",
+      "Finance Types",
+      typeId,
+      updated.name,
+      `Updated finance type: ${changes.length > 0 ? changes.join(", ") : "Details modified"}`,
+    );
+  }
+
   return clone(updated);
 };
 
 export const deleteFinanceTypeRecord = (typeId: string) => {
+  const existing = financeTypes.find((type) => type.type_id === typeId);
+  if (!existing) {
+    return;
+  }
+
+  const usageCount = countTransactionsForFinanceType(typeId);
+  if (usageCount > 0) {
+    throw new Error(
+      `Cannot delete ${existing.name}. This category is currently linked to one or more active transactions. Please re-assign those transactions before deletion.`,
+    );
+  }
+
+  // Audit log
+  createAuditLogEntry(
+    "DELETED",
+    "Finance Types",
+    typeId,
+    existing.name,
+    `Deleted finance type: ${existing.name}`,
+  );
+
+  deletedFinanceTypes.set(typeId, clone(existing));
   financeTypes = financeTypes.filter((type) => type.type_id !== typeId);
+};
+
+export const restoreFinanceTypeRecord = (typeId: string): FinanceType => {
+  const record = deletedFinanceTypes.get(typeId);
+  if (!record) {
+    throw new Error(`Finance type ${typeId} is not available for restore`);
+  }
+  financeTypes = [record, ...financeTypes];
+  deletedFinanceTypes.delete(typeId);
+  return clone(record);
 };
 
 /***************************************************************
@@ -463,6 +666,8 @@ let accounts: Account[] = [
   },
 ];
 
+const deletedAccounts = new Map<string, Account>();
+
 export const listAccounts = () => clone(accounts);
 
 export const createAccountRecord = (payload: AccountPayload): Account => {
@@ -496,6 +701,16 @@ export const createAccountRecord = (payload: AccountPayload): Account => {
   };
 
   accounts = [account, ...accounts];
+  
+  // Audit log
+  createAuditLogEntry(
+    "CREATED",
+    "Accounts",
+    account.account_id,
+    account.name,
+    `Created account: ${account.name} (${account.account_type})`,
+  );
+  
   return clone(account);
 };
 
@@ -550,11 +765,101 @@ export const updateAccountRecord = (
     throw new Error(`Account ${accountId} not found`);
   }
 
+  // Audit log - track changes
+  const existing = accounts.find((acc) => acc.account_id === accountId);
+  if (existing) {
+    const changes: string[] = [];
+    if (payload.name && existing.name !== updatedAccount.name) {
+      changes.push(`Name from "${existing.name}" to "${updatedAccount.name}"`);
+    }
+    if (payload.is_active !== undefined && existing.is_active !== updatedAccount.is_active) {
+      changes.push(`Status from ${existing.is_active ? "Active" : "Inactive"} to ${updatedAccount.is_active ? "Active" : "Inactive"}`);
+    }
+    
+    createAuditLogEntry(
+      "UPDATED",
+      "Accounts",
+      accountId,
+      updatedAccount.name,
+      `Updated account: ${changes.length > 0 ? changes.join(", ") : "Details modified"}`,
+    );
+  }
+
   return clone(updatedAccount);
 };
 
 export const deleteAccountRecord = (accountId: string) => {
+  const existing = accounts.find((account) => account.account_id === accountId);
+  if (!existing) {
+    return;
+  }
+  
+  // Audit log
+  createAuditLogEntry(
+    "DELETED",
+    "Accounts",
+    accountId,
+    existing.name,
+    `Deleted account: ${existing.name}`,
+  );
+  
+  deletedAccounts.set(accountId, clone(existing));
   accounts = accounts.filter((account) => account.account_id !== accountId);
+};
+
+export const restoreAccountRecord = (accountId: string): Account => {
+  const account = deletedAccounts.get(accountId);
+  if (!account) {
+    throw new Error(`Account ${accountId} is not available for restore`);
+  }
+  accounts = [account, ...accounts];
+  deletedAccounts.delete(accountId);
+  return clone(account);
+};
+
+const findAccountById = (accountId: string) =>
+  accounts.find((account) => account.account_id === accountId);
+
+const requireAccountById = (accountId: string): Account => {
+  const account = findAccountById(accountId);
+  if (!account) {
+    throw new Error(`Account ${accountId} not found`);
+  }
+  return account;
+};
+
+const resolveAccountSnapshot = (accountId: string) => {
+  const account = findAccountById(accountId);
+  return account ? clone(account) : null;
+};
+
+const updateAccountBalanceValue = (accountId: string, delta: number) => {
+  let updatedAccount: Account | null = null;
+  accounts = accounts.map((account) => {
+    if (account.account_id !== accountId) {
+      return account;
+    }
+    updatedAccount = {
+      ...account,
+      current_balance: Number((account.current_balance + delta).toFixed(2)),
+      updated_at: format(new Date(), "yyyy-MM-dd'T'HH:mm:ssxxx"),
+    };
+    return updatedAccount;
+  });
+
+  if (!updatedAccount) {
+    throw new Error(`Account ${accountId} not found`);
+  }
+
+  return updatedAccount;
+};
+
+const applyAccountEffect = (accountId: string, debit: number, credit: number, reverse = false) => {
+  const delta = credit - debit;
+  if (Math.abs(delta) < 0.000001) {
+    return;
+  }
+  updateAccountBalanceValue(accountId, reverse ? -delta : delta);
 };
 
 /***************************************************************
@@ -628,6 +933,8 @@ let departments: Department[] = [
   },
 ];
 
+const deletedDepartments = new Map<string, Department>();
+
 export const listDepartments = () => clone(departments);
 
 export const createDepartmentRecord = (payload: DepartmentPayload): Department => {
@@ -641,6 +948,16 @@ export const createDepartmentRecord = (payload: DepartmentPayload): Department =
   };
 
   departments = [department, ...departments];
+  
+  // Audit log
+  createAuditLogEntry(
+    "CREATED",
+    "Departments",
+    department.dept_id,
+    department.name,
+    `Created department: ${department.name}`,
+  );
+  
   return clone(department);
 };
 
@@ -648,6 +965,8 @@ export const updateDepartmentRecord = (
   deptId: string,
   payload: Partial<DepartmentPayload>,
 ): Department => {
+  const existing = departments.find((dept) => dept.dept_id === deptId);
+  
   departments = departments.map((department) =>
     department.dept_id === deptId
       ? {
@@ -667,11 +986,52 @@ export const updateDepartmentRecord = (
     throw new Error(`Department ${deptId} not found`);
   }
 
+  // Audit log - track changes
+  if (existing) {
+    const changes: string[] = [];
+    if (payload.name && existing.name !== updated.name) {
+      changes.push(`Name from "${existing.name}" to "${updated.name}"`);
+    }
+    
+    createAuditLogEntry(
+      "UPDATED",
+      "Departments",
+      deptId,
+      updated.name,
+      `Updated department: ${changes.length > 0 ? changes.join(", ") : "Details modified"}`,
+    );
+  }
+
   return clone(updated);
 };
 
 export const deleteDepartmentRecord = (deptId: string) => {
+  const existing = departments.find((department) => department.dept_id === deptId);
+  if (!existing) {
+    return;
+  }
+  
+  // Audit log
+  createAuditLogEntry(
+    "DELETED",
+    "Departments",
+    deptId,
+    existing.name,
+    `Deleted department: ${existing.name}`,
+  );
+  
+  deletedDepartments.set(deptId, clone(existing));
   departments = departments.filter((department) => department.dept_id !== deptId);
+};
+
+export const restoreDepartmentRecord = (deptId: string): Department => {
+  const department = deletedDepartments.get(deptId);
+  if (!department) {
+    throw new Error(`Department ${deptId} is not available for restore`);
+  }
+  departments = [department, ...departments];
+  deletedDepartments.delete(deptId);
+  return clone(department);
 };
 
 /***************************************************************
@@ -866,6 +1226,8 @@ let staffMembers: Staff[] = [
   },
 ];
 
+const deletedStaffMembers = new Map<string, Staff>();
+
 export const listStaff = () => clone(staffMembers);
 
 export const createStaffRecord = (payload: StaffPayload): Staff => {
@@ -920,6 +1282,16 @@ export const createStaffRecord = (payload: StaffPayload): Staff => {
   };
 
   staffMembers = [staff, ...staffMembers];
+  
+  // Audit log
+  createAuditLogEntry(
+    "CREATED",
+    "Staff & Roles",
+    staff.staff_id,
+    staff.name,
+    `Created staff profile: ${staff.name} (${staff.role})`,
+  );
+  
   return clone(staff);
 };
 
@@ -961,11 +1333,56 @@ export const updateStaffRecord = (staffId: string, payload: Partial<StaffPayload
     throw new Error(`Staff member ${staffId} not found`);
   }
 
+  // Audit log - track changes
+  const existing = staffMembers.find((member) => member.staff_id === staffId);
+  if (existing) {
+    const changes: string[] = [];
+    if (payload.name && existing.name !== updated.name) {
+      changes.push(`Name from "${existing.name}" to "${updated.name}"`);
+    }
+    if (payload.role && existing.role !== updated.role) {
+      changes.push(`Role from ${existing.role} to ${updated.role}`);
+    }
+    
+    createAuditLogEntry(
+      "UPDATED",
+      "Staff & Roles",
+      staffId,
+      updated.name,
+      `Updated staff profile: ${changes.length > 0 ? changes.join(", ") : "Details modified"}`,
+    );
+  }
+
   return clone(updated);
 };
 
 export const deleteStaffRecord = (staffId: string) => {
+  const existing = staffMembers.find((member) => member.staff_id === staffId);
+  if (!existing) {
+    return;
+  }
+  
+  // Audit log
+  createAuditLogEntry(
+    "DELETED",
+    "Staff & Roles",
+    staffId,
+    existing.name,
+    `Deleted staff profile: ${existing.name}`,
+  );
+  
+  deletedStaffMembers.set(staffId, clone(existing));
   staffMembers = staffMembers.filter((member) => member.staff_id !== staffId);
+};
+
+export const restoreStaffRecord = (staffId: string): Staff => {
+  const staff = deletedStaffMembers.get(staffId);
+  if (!staff) {
+    throw new Error(`Staff member ${staffId} is not available for restore`);
+  }
+  staffMembers = [staff, ...staffMembers];
+  deletedStaffMembers.delete(staffId);
+  return clone(staff);
 };
 
 /***************************************************************
@@ -976,6 +1393,7 @@ export interface TransactionFilters {
   search?: string;
   finance_type_id?: string;
   department_id?: string;
+  account_id?: string;
   staff_id?: string;
   transaction_from?: string;
   transaction_to?: string;
@@ -996,8 +1414,11 @@ export interface TransactionBillPayload {
 export interface TransactionPayload {
   t_date: string;
   u_date: string;
+  transaction_time: string;
+  transaction_datetime?: string;
   finance_type_id: string;
   department_id: string;
+  account_id: string;
   narration: string;
   debit: number;
   credit: number;
@@ -1006,6 +1427,15 @@ export interface TransactionPayload {
   staff_id?: string | null;
   bill?: TransactionBillPayload;
 }
+
+const combineDateAndTimeIso = (date: string, time: string) => {
+  const candidate = new Date(`${date}T${time}:00`);
+  if (!Number.isNaN(candidate.getTime())) {
+    return candidate.toISOString();
+  }
+
+  return new Date().toISOString();
+};
 
 let bills: Bill[] = [
   {
@@ -1029,6 +1459,7 @@ let transactions: Transaction[] = [
     t_date: "2024-10-01",
     u_date: "2024-10-01",
     transaction_time: "09:30",
+    transaction_datetime: "2024-10-01T09:30:00+05:30",
     finance_type_id: financeTypes[0].type_id,
     finance_type: {
       id: financeTypes[0].type_id,
@@ -1040,6 +1471,8 @@ let transactions: Transaction[] = [
       id: departments[0].dept_id,
       name: departments[0].name,
     },
+    account_id: accounts[0].account_id,
+    account: resolveAccountSnapshot(accounts[0].account_id),
     staff_id: staffMembers[0].staff_id,
     staff: staffMembers[0],
     bill_reference_id: bills[0].bill_id,
@@ -1059,6 +1492,7 @@ let transactions: Transaction[] = [
     t_date: "2024-10-02",
     u_date: "2024-10-02",
     transaction_time: "15:00",
+    transaction_datetime: "2024-10-02T15:00:00+05:30",
     finance_type_id: financeTypes[1].type_id,
     finance_type: {
       id: financeTypes[1].type_id,
@@ -1070,6 +1504,8 @@ let transactions: Transaction[] = [
       id: departments[0].dept_id,
       name: departments[0].name,
     },
+    account_id: accounts[0].account_id,
+    account: resolveAccountSnapshot(accounts[0].account_id),
     staff_id: staffMembers[1].staff_id,
     staff: staffMembers[1],
     bill_reference_id: null,
@@ -1089,6 +1525,7 @@ let transactions: Transaction[] = [
     t_date: "2024-10-05",
     u_date: "2024-10-05",
     transaction_time: "12:20",
+    transaction_datetime: "2024-10-05T12:20:00+05:30",
     finance_type_id: financeTypes[2].type_id,
     finance_type: {
       id: financeTypes[2].type_id,
@@ -1100,6 +1537,8 @@ let transactions: Transaction[] = [
       id: departments[1].dept_id,
       name: departments[1].name,
     },
+    account_id: accounts[0].account_id,
+    account: resolveAccountSnapshot(accounts[0].account_id),
     staff_id: staffMembers[0].staff_id,
     staff: staffMembers[0],
     bill_reference_id: null,
@@ -1114,6 +1553,24 @@ let transactions: Transaction[] = [
     updated_at: "2024-10-05T12:25:00+05:30",
   },
 ];
+
+const deletedTransactions = new Map<number, Transaction>();
+
+function getFinanceTypeUsageCounts() {
+  const lookup = new Map<string, number>();
+  for (const txn of transactions) {
+    const current = lookup.get(txn.finance_type_id) ?? 0;
+    lookup.set(txn.finance_type_id, current + 1);
+  }
+  return lookup;
+}
+
+function countTransactionsForFinanceType(typeId: string): number {
+  return transactions.reduce(
+    (count, txn) => (txn.finance_type_id === typeId ? count + 1 : count),
+    0,
+  );
+}
 
 const resolveFinanceType = (typeId: string) => {
   const type = financeTypes.find((item) => item.type_id === typeId);
@@ -1148,6 +1605,10 @@ const applyTransactionFilters = (items: Transaction[], filters: TransactionFilte
     }
 
     if (filters.department_id && transaction.department_id !== filters.department_id) {
+      return false;
+    }
+
+    if (filters.account_id && transaction.account_id !== filters.account_id) {
       return false;
     }
 
@@ -1203,6 +1664,10 @@ export const createTransactionRecord = (payload: TransactionPayload): Transactio
   const createdAt = format(new Date(), "yyyy-MM-dd'T'HH:mm:ssxxx");
   const runningBalance =
     (transactions[0]?.running_balance ?? 0) + payload.credit - payload.debit;
+  requireAccountById(payload.account_id);
+  const transactionTime = payload.transaction_time || format(new Date(), "HH:mm");
+  const transactionDateTime =
+    payload.transaction_datetime ?? combineDateAndTimeIso(payload.t_date, transactionTime);
 
   const bill = payload.bill
     ? createBillRecord(id, {
@@ -1211,16 +1676,21 @@ export const createTransactionRecord = (payload: TransactionPayload): Transactio
       })
     : null;
 
+  applyAccountEffect(payload.account_id, payload.debit, payload.credit);
+
   const transaction: Transaction = {
     id,
     reference,
     t_date: payload.t_date,
     u_date: payload.u_date ?? payload.t_date,
-    transaction_time: format(new Date(), "HH:mm"),
+    transaction_time: transactionTime,
+    transaction_datetime: transactionDateTime,
     finance_type_id: payload.finance_type_id,
     finance_type: resolveFinanceType(payload.finance_type_id),
     department_id: payload.department_id,
     department: resolveDepartment(payload.department_id),
+    account_id: payload.account_id,
+    account: resolveAccountSnapshot(payload.account_id),
     staff_id: payload.staff_id ?? null,
     staff: resolveStaff(payload.staff_id ?? null),
     bill_reference_id: bill?.bill_id ?? null,
@@ -1236,6 +1706,17 @@ export const createTransactionRecord = (payload: TransactionPayload): Transactio
   };
 
   transactions = [transaction, ...transactions];
+  
+  // Audit log
+  const financeTypeName = resolveFinanceType(payload.finance_type_id)?.name ?? payload.finance_type_id;
+  createAuditLogEntry(
+    "CREATED",
+    "Transactions",
+    reference,
+    reference,
+    `Created transaction: ${financeTypeName} - ${payload.narration} (Amount: ₹${payload.credit > 0 ? payload.credit : payload.debit})`,
+  );
+  
   return clone(transaction);
 };
 
@@ -1256,6 +1737,15 @@ export const updateTransactionRecord = (
     });
   }
 
+  const nextAccountId = payload.account_id || existing.account_id;
+  requireAccountById(nextAccountId);
+  const transactionTime = payload.transaction_time || existing.transaction_time || format(new Date(), "HH:mm");
+  const transactionDateTime =
+    payload.transaction_datetime ?? combineDateAndTimeIso(payload.t_date, transactionTime);
+
+  applyAccountEffect(existing.account_id, existing.debit, existing.credit, true);
+  applyAccountEffect(nextAccountId, payload.debit, payload.credit);
+
   const updated: Transaction = {
     ...existing,
     t_date: payload.t_date,
@@ -1263,6 +1753,8 @@ export const updateTransactionRecord = (
     finance_type: resolveFinanceType(payload.finance_type_id),
     department_id: payload.department_id,
     department: resolveDepartment(payload.department_id),
+    account_id: nextAccountId,
+    account: resolveAccountSnapshot(nextAccountId),
     staff_id: payload.staff_id ?? null,
     staff: resolveStaff(payload.staff_id ?? null),
     narration: payload.narration,
@@ -1273,19 +1765,80 @@ export const updateTransactionRecord = (
     bill_reference_id: bill?.bill_id ?? null,
     bill,
     u_date: payload.u_date ?? payload.t_date,
+    transaction_time: transactionTime,
+    transaction_datetime: transactionDateTime,
     updated_at: format(new Date(), "yyyy-MM-dd'T'HH:mm:ssxxx"),
   };
 
+  // Audit log - track changes before updating
+  const changes: string[] = [];
+  const oldAmount = existing.debit || existing.credit;
+  const newAmount = updated.debit || updated.credit;
+  
+  if (existing.debit !== updated.debit || existing.credit !== updated.credit) {
+    changes.push(`Amount from ₹${oldAmount} to ₹${newAmount}`);
+  }
+  if (existing.finance_type_id !== updated.finance_type_id) {
+    const oldType = existing.finance_type?.name ?? existing.finance_type_id;
+    const newType = updated.finance_type?.name ?? updated.finance_type_id;
+    changes.push(`Finance Type from ${oldType} to ${newType}`);
+  }
+  if (existing.account_id !== updated.account_id) {
+    const oldAccount = existing.account?.name ?? existing.account_id;
+    const newAccount = updated.account?.name ?? updated.account_id;
+    changes.push(`Account from ${oldAccount} to ${newAccount}`);
+  }
+  if (existing.narration !== updated.narration) {
+    changes.push(`Narration updated`);
+  }
+  
   transactions = transactions.map((transaction) =>
     transaction.id === transactionId ? updated : transaction,
+  );
+
+  // Create audit log entry
+  createAuditLogEntry(
+    "UPDATED",
+    "Transactions",
+    updated.reference,
+    updated.reference,
+    `Updated transaction: ${changes.length > 0 ? changes.join(", ") : "Details modified"}`,
   );
 
   return clone(updated);
 };
 
 export const deleteTransactionRecord = (transactionId: number) => {
+  const existing = transactions.find((transaction) => transaction.id === transactionId);
+  if (!existing) {
+    return;
+  }
+  
+  // Audit log before deletion
+  createAuditLogEntry(
+    "DELETED",
+    "Transactions",
+    existing.reference,
+    existing.reference,
+    `Deleted transaction: ${existing.narration} (Amount: ₹${existing.debit || existing.credit})`,
+  );
+  
+  deletedTransactions.set(transactionId, clone(existing));
   transactions = transactions.filter((transaction) => transaction.id !== transactionId);
   bills = bills.filter((bill) => bill.transaction_id_link !== transactionId);
+};
+
+export const restoreTransactionRecord = (transactionId: number): Transaction => {
+  const transaction = deletedTransactions.get(transactionId);
+  if (!transaction) {
+    throw new Error(`Transaction ${transactionId} is not available for restore`);
+  }
+  transactions = [transaction, ...transactions];
+  if (transaction.bill) {
+    bills = [transaction.bill, ...bills.filter((bill) => bill.bill_id !== transaction.bill?.bill_id)];
+  }
+  deletedTransactions.delete(transactionId);
+  return clone(transaction);
 };
 
 export const getTransactionRecord = (transactionId: number): Transaction => {
@@ -1463,12 +2016,19 @@ export const updateSalaryRecord = (salaryId: string, payload: Partial<SalaryPayl
       const narration =
         transactionRecord.narration ??
         `Payroll for ${staff?.name ?? existing.staff_id}`;
+        const fallbackTime = transactionRecord.transaction_time ?? format(new Date(), "HH:mm");
+        const fallbackDateTime =
+          transactionRecord.transaction_datetime ??
+          combineDateAndTimeIso(transactionRecord.t_date, fallbackTime);
 
       const transactionPayload: TransactionPayload = {
         t_date: transactionRecord.t_date,
         u_date: transactionRecord.u_date ?? transactionRecord.t_date,
+          transaction_time: fallbackTime,
+          transaction_datetime: fallbackDateTime,
         finance_type_id: payload.finance_type_id ?? transactionRecord.finance_type_id,
         department_id: payload.department_id ?? transactionRecord.department_id,
+          account_id: transactionRecord.account_id,
         narration,
         debit: isDebitTransaction ? updated.net_pay : 0,
         credit: isDebitTransaction ? 0 : updated.net_pay,
@@ -1570,6 +2130,7 @@ export const mockDb = {
   updateFinanceType: (typeId: string, payload: Partial<FinanceTypePayload>) =>
     simulateAsync(updateFinanceTypeRecord(typeId, payload)),
   deleteFinanceType: (typeId: string) => simulateAsync(deleteFinanceTypeRecord(typeId)),
+  restoreFinanceType: (typeId: string) => simulateAsync(restoreFinanceTypeRecord(typeId)),
   listBillDocumentTypes: () => simulateAsync(listBillDocumentTypes()),
   createBillDocumentType: (name: string) => simulateAsync(createBillDocumentTypeRecord(name)),
   listAccounts: () => simulateAsync(listAccounts()),
@@ -1577,6 +2138,7 @@ export const mockDb = {
   updateAccount: (accountId: string, payload: Partial<AccountPayload>) =>
     simulateAsync(updateAccountRecord(accountId, payload)),
   deleteAccount: (accountId: string) => simulateAsync(deleteAccountRecord(accountId)),
+  restoreAccount: (accountId: string) => simulateAsync(restoreAccountRecord(accountId)),
 
   // departments
   listDepartments: () => simulateAsync(listDepartments()),
@@ -1585,6 +2147,7 @@ export const mockDb = {
   updateDepartment: (deptId: string, payload: Partial<DepartmentPayload>) =>
     simulateAsync(updateDepartmentRecord(deptId, payload)),
   deleteDepartment: (deptId: string) => simulateAsync(deleteDepartmentRecord(deptId)),
+  restoreDepartment: (deptId: string) => simulateAsync(restoreDepartmentRecord(deptId)),
 
   // staff
   listStaff: () => simulateAsync(listStaff()),
@@ -1592,6 +2155,7 @@ export const mockDb = {
   updateStaff: (staffId: string, payload: Partial<StaffPayload>) =>
     simulateAsync(updateStaffRecord(staffId, payload)),
   deleteStaff: (staffId: string) => simulateAsync(deleteStaffRecord(staffId)),
+  restoreStaff: (staffId: string) => simulateAsync(restoreStaffRecord(staffId)),
 
   // transactions
   paginateTransactions: (filters: TransactionFilters, perPage: number) =>
@@ -1602,6 +2166,8 @@ export const mockDb = {
     simulateAsync(updateTransactionRecord(transactionId, payload)),
   deleteTransaction: (transactionId: number) =>
     simulateAsync(deleteTransactionRecord(transactionId)),
+  restoreTransaction: (transactionId: number) =>
+    simulateAsync(restoreTransactionRecord(transactionId)),
   getTransaction: (transactionId: number) =>
     simulateAsync(getTransactionRecord(transactionId)),
 
@@ -1625,7 +2191,10 @@ export const mockDb = {
 
   // analytics
   getAnalyticsSummary: (filters: AnalyticsFilters) => simulateAsync(buildAnalyticsSummary(filters)),
+
+  // audit logs
+  listAuditLogs: (filters?: AuditLogFilters) => simulateAsync(listAuditLogs(filters)),
 };
 
-export type { AccountPayload, AnalyticsFilters, PaginatedResponse };
+export type { AccountPayload, AnalyticsFilters, AuditLogFilters, PaginatedResponse };
 

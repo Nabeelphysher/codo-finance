@@ -11,6 +11,7 @@ const Admin = () => {
     <AppLayout
       title="Finance Operations Control"
       subtitle="Maintain master data, staff access, and payroll postings"
+      disableContentPadding
     >
       <div className="space-y-6 px-3 py-4 sm:px-4 md:px-6 md:py-6 lg:px-8 lg:py-8">
         <Tabs defaultValue="finance-types" className="space-y-6">

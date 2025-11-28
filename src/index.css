@@ -64,6 +64,22 @@ All colors MUST be HSL.
     --sidebar-border: 220 13% 91%;
 
     --sidebar-ring: 217.2 91.2% 59.8%;
+
+    --menu-bg: 0 0% 100%;
+    --menu-text: 222 47% 11%;
+    --menu-muted: 215 16% 47%;
+    --menu-hover: 215 32% 90%;
+    --menu-border: 214 32% 91%;
+    --menu-disabled: 215 16% 70%;
+    --menu-icon: 215 16% 47%;
+
+    --topbar-bg: 0 0% 100%;
+    --topbar-text: 222 47% 11%;
+    --topbar-muted: 215 16% 47%;
+    --topbar-border: 214 32% 91%;
+    --topbar-hover-bg: 215 32% 94%;
+    --topbar-active-bg: 0 0% 100%;
+    --topbar-active-text: 222 47% 11%;
   }
 
   .dark {
@@ -113,6 +129,22 @@ All colors MUST be HSL.
     --sidebar-accent-foreground: 240 4.8% 95.9%;
     --sidebar-border: 240 3.7% 15.9%;
     --sidebar-ring: 217.2 91.2% 59.8%;
+
+    --menu-bg: 222 47% 15%;
+    --menu-text: 210 40% 98%;
+    --menu-muted: 215 20% 70%;
+    --menu-hover: 222 33% 22%;
+    --menu-border: 222 33% 25%;
+    --menu-disabled: 215 16% 55%;
+    --menu-icon: 215 20% 78%;
+
+    --topbar-bg: 222 47% 13%;
+    --topbar-text: 210 40% 98%;
+    --topbar-muted: 215 20% 70%;
+    --topbar-border: 222 33% 20%;
+    --topbar-hover-bg: 217 33% 22%;
+    --topbar-active-bg: 217 33% 20%;
+    --topbar-active-text: 210 40% 98%;
   }
 }
 
@@ -124,4 +156,23 @@ All colors MUST be HSL.
   body {
     @apply bg-background text-foreground;
   }
+}
+
+.custom-context-menu {
+  background-color: hsl(var(--menu-bg));
+  color: hsl(var(--menu-text));
+  border: 1px solid hsl(var(--menu-border));
+}
+
+.custom-context-menu button {
+  color: inherit;
+  background: transparent;
+}
+
+.custom-context-menu button:not(:disabled):hover {
+  background-color: hsl(var(--menu-hover));
+}
+
+.custom-context-menu button:disabled {
+  color: hsl(var(--menu-disabled));
 }

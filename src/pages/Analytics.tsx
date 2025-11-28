@@ -164,7 +164,7 @@ const Analytics = () => {
   const isRangeActive = Boolean(range?.from || range?.to);
 
   return (
-    <AppLayout>
+    <AppLayout disableContentPadding>
       <div className="px-4 pb-8 pt-4 md:px-6 lg:px-8">
         <header className="mb-6 flex flex-col gap-2 md:mb-8 md:flex-row md:items-center md:justify-between">
           <div>

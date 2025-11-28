@@ -6,6 +6,7 @@ import {
   createFinanceType,
   updateFinanceType,
   deleteFinanceType,
+  restoreFinanceType,
   fetchFinanceCategories,
   createFinanceCategory,
   FinanceTypePayload,
@@ -30,6 +31,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/components/ui/use-toast";
+import { useUndoToast } from "@/hooks/use-undo-toast";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Loader2, Pencil, Plus, PlusCircle, RefreshCw, Trash2 } from "lucide-react";
 import { ApiError } from "@/lib/api";
@@ -53,6 +55,7 @@ const defaultFormState: FormState = {
 export const FinanceTypesPanel = () => {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const showUndoToast = useUndoToast();
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<FinanceType | null>(null);
@@ -112,12 +115,26 @@ export const FinanceTypesPanel = () => {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (typeId: string) => deleteFinanceType(typeId),
-    onSuccess: () => {
-      toast({ title: "Finance type deleted" });
+    mutationFn: ({ typeId }: { typeId: string; label: string }) => deleteFinanceType(typeId),
+    onSuccess: (_result, variables) => {
       queryClient.invalidateQueries({ queryKey: ["finance-types"] });
+      showUndoToast({
+        entity: "Finance Type",
+        identifier: variables.label,
+        onUndo: async () => {
+          await restoreFinanceType(variables.typeId);
+          queryClient.invalidateQueries({ queryKey: ["finance-types"] });
+        },
+      });
     },
-    onError: (error: unknown) => showError(error, "Unable to delete finance type"),
+    onError: (error: unknown) =>
+      showError(error, "Unable to delete finance type", {
+        title:
+          error instanceof Error &&
+          /Cannot delete .+linked to one or more active transactions/i.test(error.message)
+            ? "Deletion Blocked: Active Dependencies"
+            : undefined,
+      }),
   });
 
   const closeDialog = () => {
@@ -126,10 +143,16 @@ export const FinanceTypesPanel = () => {
     setFormState(defaultFormState);
   };
 
-  const showError = (error: unknown, fallback: string) => {
-    const message = error instanceof ApiError ? error.message : fallback;
+  const showError = (error: unknown, fallback: string, options?: { title?: string }) => {
+    const message =
+      error instanceof ApiError
+        ? error.message
+        : error instanceof Error && error.message
+          ? error.message
+          : fallback;
+
     toast({
-      title: "Request failed",
+      title: options?.title ?? "Request failed",
       description: message,
       variant: "destructive",
     });
@@ -242,9 +265,26 @@ export const FinanceTypesPanel = () => {
             )}
 
             {!financeTypesQuery.isLoading &&
-              sortedFinanceTypes.map((financeType) => (
-                <TableRow key={financeType.type_id} className="align-middle">
-                  <TableCell className="font-medium">{financeType.name}</TableCell>
+              sortedFinanceTypes.map((financeType) => {
+                const linkedCount = financeType.linked_transaction_count ?? 0;
+                const hasDependencies = linkedCount > 0;
+                const deleteDisabled = deleteMutation.isLoading || hasDependencies;
+                const dependencyLabel =
+                  hasDependencies &&
+                  `${linkedCount} linked transaction${linkedCount === 1 ? "" : "s"}`;
+
+                return (
+                  <TableRow key={financeType.type_id} className="align-middle">
+                    <TableCell className="font-medium">
+                      <div className="flex flex-col gap-1">
+                        <span>{financeType.name}</span>
+                        {hasDependencies && (
+                          <span className="text-xs font-normal text-amber-600">
+                            {dependencyLabel}
+                          </span>
+                        )}
+                      </div>
+                    </TableCell>
                   <TableCell>
                     <Badge variant="outline">{financeType.category}</Badge>
                   </TableCell>
@@ -281,19 +321,29 @@ export const FinanceTypesPanel = () => {
                         <Button
                           variant="ghost"
                           size="icon"
-                          className="h-9 w-9 rounded-xl text-destructive hover:bg-destructive/10"
+                          className="h-9 w-9 rounded-xl text-destructive hover:bg-destructive/10 disabled:text-muted-foreground"
                           aria-label="Delete finance type"
-                          onClick={() => deleteMutation.mutate(financeType.type_id)}
-                          disabled={deleteMutation.isLoading}
+                          onClick={() =>
+                            deleteMutation.mutate({
+                              typeId: financeType.type_id,
+                              label: financeType.name,
+                            })
+                          }
+                          disabled={deleteDisabled}
                         >
                           <Trash2 className="h-4 w-4" />
                         </Button>
                       </TooltipTrigger>
-                      <TooltipContent>Delete Finance Type</TooltipContent>
+                      <TooltipContent>
+                        {hasDependencies
+                          ? "Reassign linked transactions before deleting."
+                          : "Delete Finance Type"}
+                      </TooltipContent>
                     </Tooltip>
                   </TableCell>
                 </TableRow>
-              ))}
+              );
+            })}
 
             {!financeTypesQuery.isLoading && sortedFinanceTypes.length === 0 && (
               <TableRow>

@@ -60,7 +60,36 @@ export interface ProfitLossReport {
   netProfit: number;
 }
 
-export type ReportsResult = TrialBalanceReport | ProfitLossReport;
+export interface TaxSectionEntry {
+  financeTypeId: string;
+  accountName: string;
+  category: FinanceCategory | null;
+  amount: number;
+}
+
+export interface TaxSection {
+  heading: string;
+  entries: TaxSectionEntry[];
+  total: number;
+}
+
+export interface IncomeTaxStatementReport {
+  reportType: "income-tax";
+  generatedAt: string;
+  range: {
+    start: string;
+    end: string;
+  };
+  departmentId?: string;
+  incomeSections: TaxSection[];
+  deductionSections: TaxSection[];
+  totalIncome: number;
+  totalDeductions: number;
+  netTaxableIncome: number;
+  notes: string[];
+}
+
+export type ReportsResult = TrialBalanceReport | ProfitLossReport | IncomeTaxStatementReport;
 
 const toIsoDate = (value?: string): string | undefined => {
   if (!value) return undefined;
@@ -91,6 +120,93 @@ const buildTransactionFilters = (
 };
 
 const sumBy = (values: number[]) => values.reduce((acc, value) => acc + value, 0);
+
+const NON_DEDUCTIBLE_KEYWORDS = ["penalty", "fine", "late fee", "personal", "income tax", "drawings"];
+
+const classifyIncomeHeading = (name: string) => {
+  const normalized = name.toLowerCase();
+  if (/(interest|dividend|other income|rent|rental|misc)/.test(normalized)) {
+    return "Other Income";
+  }
+  if (/(capital|asset sale|gain)/.test(normalized)) {
+    return "Capital Gains & Asset Sales";
+  }
+  return "Business & Professional Income";
+};
+
+const classifyDeductionHeading = (name: string) => {
+  const normalized = name.toLowerCase();
+  if (/(salary|wage|staff|payroll|bonus)/.test(normalized)) {
+    return "Employee Costs";
+  }
+  if (/(rent|lease|office|admin|utility|internet|electric|maintenance)/.test(normalized)) {
+    return "Administrative & Facility Costs";
+  }
+  if (/(marketing|travel|client|business development|sales)/.test(normalized)) {
+    return "Selling & General Expenses";
+  }
+  if (/(depreciation|amortization|asset)/.test(normalized)) {
+    return "Depreciation & Amortisation";
+  }
+  if (/(professional|consultant|legal|audit)/.test(normalized)) {
+    return "Professional & Compliance Fees";
+  }
+  return "Other Allowable Deductions";
+};
+
+const isNonDeductibleExpense = (name: string) =>
+  NON_DEDUCTIBLE_KEYWORDS.some((term) => name.toLowerCase().includes(term));
+
+const roundAmount = (value: number) => Number(value.toFixed(2));
+
+type TaxSectionAccumulator = Map<string, TaxSection>;
+
+const ensureSection = (container: TaxSectionAccumulator, heading: string): TaxSection => {
+  const existing = container.get(heading);
+  if (existing) {
+    return existing;
+  }
+
+  const section: TaxSection = {
+    heading,
+    entries: [],
+    total: 0,
+  };
+
+  container.set(heading, section);
+  return section;
+};
+
+const pushTaxEntry = (
+  container: TaxSectionAccumulator,
+  heading: string,
+  entry: TaxSectionEntry,
+) => {
+  const section = ensureSection(container, heading);
+  const existing = section.entries.find((item) => item.financeTypeId === entry.financeTypeId);
+  if (existing) {
+    existing.amount += entry.amount;
+  } else {
+    section.entries.push(entry);
+  }
+  section.total += entry.amount;
+};
+
+const serializeSections = (container: TaxSectionAccumulator): TaxSection[] =>
+  Array.from(container.values())
+    .map((section) => ({
+      heading: section.heading,
+      total: roundAmount(section.total),
+      entries: section.entries
+        .filter((entry) => entry.amount > 0.005)
+        .map((entry) => ({
+          ...entry,
+          amount: roundAmount(entry.amount),
+        }))
+        .sort((a, b) => b.amount - a.amount),
+    }))
+    .filter((section) => section.entries.length > 0)
+    .sort((a, b) => a.heading.localeCompare(b.heading));
 
 export async function fetchTrialBalanceReport(
   filters: TrialBalanceReportFilters = {},
@@ -275,6 +391,105 @@ export async function fetchProfitLossReport(
       entries: expenseResults,
     },
     netProfit: totalRevenue - totalExpenses,
+  };
+}
+
+export async function fetchIncomeTaxStatementReport(
+  filters: BaseReportFilters,
+): Promise<IncomeTaxStatementReport> {
+  const start = toIsoDate(filters.startDate);
+  const end = toIsoDate(filters.endDate);
+
+  if (!start || !end) {
+    throw new Error(
+      "A valid start and end date are required to generate the Income Tax Statement.",
+    );
+  }
+
+  const financeTypes = (await mockDb.listFinanceTypes()).filter((type) => type.is_active !== false);
+  const typeLookup = new Map(financeTypes.map((type) => [type.type_id, type]));
+
+  const transactions = await mockDb.listTransactions(
+    buildTransactionFilters(
+      { ...filters, startDate: start, endDate: end },
+      {
+        transaction_from: start,
+        transaction_to: end,
+      },
+    ),
+  );
+
+  const incomeAccumulator: TaxSectionAccumulator = new Map();
+  const deductionAccumulator: TaxSectionAccumulator = new Map();
+
+  transactions.forEach((transaction) => {
+    const type = typeLookup.get(transaction.finance_type_id);
+    const accountName = type?.name ?? transaction.finance_type?.name ?? "Uncategorised";
+    const category = type?.category ?? transaction.finance_type?.category ?? null;
+
+    const netCredit = transaction.credit - transaction.debit;
+    const netDebit = transaction.debit - transaction.credit;
+
+    if (netCredit > 0.005) {
+      const heading = classifyIncomeHeading(accountName);
+      pushTaxEntry(incomeAccumulator, heading, {
+        financeTypeId: transaction.finance_type_id,
+        accountName,
+        category,
+        amount: netCredit,
+      });
+      return;
+    }
+
+    if (netDebit > 0.005) {
+      if (category === "Asset" || category === "Liability") {
+        return;
+      }
+
+      if (isNonDeductibleExpense(accountName)) {
+        return;
+      }
+
+      const heading = classifyDeductionHeading(accountName);
+      pushTaxEntry(deductionAccumulator, heading, {
+        financeTypeId: transaction.finance_type_id,
+        accountName,
+        category,
+        amount: netDebit,
+      });
+    }
+  });
+
+  const incomeSections = serializeSections(incomeAccumulator);
+  const deductionSections = serializeSections(deductionAccumulator);
+
+  const totalIncome = roundAmount(sumBy(incomeSections.map((section) => section.total)));
+  const totalDeductions = roundAmount(sumBy(deductionSections.map((section) => section.total)));
+  const netTaxableIncome = roundAmount(totalIncome - totalDeductions);
+
+  const departmentId =
+    filters.departmentId && filters.departmentId !== "all" ? filters.departmentId : undefined;
+
+  const notes = [
+    `Tax period: ${start} to ${end}`,
+    departmentId ? `Department filter applied: ${departmentId}` : "Department filter: All",
+    "Non-deductible expenses automatically excluded based on policy keywords.",
+  ];
+
+  return {
+    reportType: "income-tax",
+    generatedAt: new Date().toISOString(),
+    range: {
+      start,
+      end,
+    },
+    departmentId,
+    incomeSections,
+    deductionSections,
+    totalIncome,
+    totalDeductions,
+    netTaxableIncome,
+    notes,
   };
 }
 

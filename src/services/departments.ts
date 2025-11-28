@@ -25,3 +25,7 @@ export async function deleteDepartment(deptId: string): Promise<void> {
   await mockDb.deleteDepartment(deptId);
 }
 
+export async function restoreDepartment(deptId: string): Promise<Department> {
+  return mockDb.restoreDepartment(deptId);
+}
+

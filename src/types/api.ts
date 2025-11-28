@@ -37,6 +37,8 @@ export interface FinanceType {
   is_active: boolean;
   created_at?: string;
   updated_at?: string;
+  has_transactions?: boolean;
+  linked_transaction_count?: number;
 }
 
 export interface Department {
@@ -127,6 +129,7 @@ export interface TransactionSummary {
   t_date: string;
   u_date: string;
   transaction_time?: string | null;
+  transaction_datetime?: string | null;
   finance_type_id: string;
   finance_type?: {
     id: string;
@@ -138,6 +141,8 @@ export interface TransactionSummary {
     id: string;
     name: string | null;
   } | null;
+  account_id: string;
+  account?: Account | null;
   staff_id: string | null;
   staff?: Staff | null;
   bill_reference_id?: string | null;
@@ -241,5 +246,26 @@ export interface OpeningBalance {
   created_at?: string;
   updated_at?: string;
   transaction?: TransactionSummary;
+}
+
+export type AuditActionType = "CREATED" | "UPDATED" | "DELETED";
+
+export type AuditModule = 
+  | "Transactions"
+  | "Accounts"
+  | "Finance Types"
+  | "Departments"
+  | "Staff & Roles"
+  | "Opening Balance";
+
+export interface AuditLog {
+  id: string;
+  timestamp: string;
+  user: string;
+  action_type: AuditActionType;
+  module: AuditModule;
+  item_id: string;
+  item_name: string;
+  details: string;
 }
 

@@ -8,7 +8,7 @@ import {
   Staff,
   Department,
 } from "@/types/api";
-import { fetchStaff, createStaff, updateStaff, deleteStaff, StaffPayload } from "@/services/staff";
+import { fetchStaff, createStaff, updateStaff, deleteStaff, restoreStaff, StaffPayload } from "@/services/staff";
 import { fetchDepartments } from "@/services/departments";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -31,6 +31,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/components/ui/use-toast";
+import { useUndoToast } from "@/hooks/use-undo-toast";
 import { ApiError } from "@/lib/api";
 import { Loader2, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -166,6 +167,7 @@ const defaultFormState: FormState = {
 export const StaffPanel = () => {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const showUndoToast = useUndoToast();
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState<Staff | null>(null);
@@ -206,10 +208,17 @@ export const StaffPanel = () => {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (staffId: string) => deleteStaff(staffId),
-    onSuccess: () => {
-      toast({ title: "Staff member updated" });
+    mutationFn: ({ staffId }: { staffId: string; label: string }) => deleteStaff(staffId),
+    onSuccess: (_result, variables) => {
       queryClient.invalidateQueries({ queryKey: ["staff"] });
+      showUndoToast({
+        entity: "Staff",
+        identifier: variables.label,
+        onUndo: async () => {
+          await restoreStaff(variables.staffId);
+          queryClient.invalidateQueries({ queryKey: ["staff"] });
+        },
+      });
     },
     onError: (error: unknown) => showError(error, "Unable to delete staff member"),
   });
@@ -550,7 +559,12 @@ export const StaffPanel = () => {
                           size="icon"
                           className="h-9 w-9 rounded-xl text-destructive hover:bg-destructive/10"
                           aria-label="Delete staff profile"
-                          onClick={() => deleteMutation.mutate(staff.staff_id)}
+                          onClick={() =>
+                            deleteMutation.mutate({
+                              staffId: staff.staff_id,
+                              label: staff.name,
+                            })
+                          }
                           disabled={deleteMutation.isLoading}
                         >
                           <Trash2 className="h-4 w-4" />

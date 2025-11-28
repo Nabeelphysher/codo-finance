@@ -33,3 +33,7 @@ export async function deleteFinanceType(typeId: string): Promise<void> {
   await mockDb.deleteFinanceType(typeId);
 }
 
+export async function restoreFinanceType(typeId: string): Promise<FinanceType> {
+  return mockDb.restoreFinanceType(typeId);
+}
+
